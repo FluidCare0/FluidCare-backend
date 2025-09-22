@@ -60,7 +60,3 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = ['id','mobile','name','role', 'email']
 
-class TrialSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = User
-        fields = ['trial_start', 'trial_end']

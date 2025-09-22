@@ -192,19 +192,3 @@ class CurrentUserView(views.APIView):
         serializer = UserSerializer(request.user)
         return Response(serializer.data) 
 
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-def start_trial_view(request):
-    user = request.user
-    if user.start_trial():
-        serializer = TrialSerializer(user)
-        return Response({
-            "message": "Trial started successfully!",
-            "data": serializer.data
-        }, status=200)
-    else:
-        serializer = TrialSerializer(user)
-        return Response({
-            "message": "Trial already started.",
-            "data": serializer.data
-        }, status=400)

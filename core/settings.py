@@ -3,7 +3,6 @@ import json
 from pathlib import Path
 from datetime import timedelta
 from decouple import config
-from celery.schedules import crontab
 
 # --------------------------
 # Base Directory
@@ -59,15 +58,11 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'django_ratelimit',
-    'django_celery_results',
     'drf_yasg',
 
     # Custom apps
     'auth_app',
-    'social_app',
-    'admin_app',
-    'moderator_app',
-    'subscription_app'
+
 ]
 
 # --------------------------
@@ -229,91 +224,48 @@ TWILIO_ACCOUNT_SID = config('TWILIO_ACCOUNT_SID', default='')
 TWILIO_AUTH_TOKEN = config('TWILIO_AUTH_TOKEN', default='')
 TWILIO_FROM_NUMBER = config('TWILIO_PHONE_NUMBER', default='')
 
-# --------------------------
-# Email
-# --------------------------
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
-EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
-EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
-EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
-DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='noreply@yourdomain.com')
+# # --------------------------
+# # Email
+# # --------------------------
+# EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+# EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
+# EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+# EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+# EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+# EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
+# DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='noreply@yourdomain.com')
 
-# --------------------------
-# Firebase & reCAPTCHA
-# --------------------------
-FIREBASE_CREDENTIALS_PATH = config('FIREBASE_CREDENTIALS_PATH', default='config/firebase-service-account.json')
-RECAPTCHA_SECRET_KEY = config('RECAPTCHA_SECRET_KEY', default='')
+# # --------------------------
+# # Firebase & reCAPTCHA
+# # --------------------------
+# FIREBASE_CREDENTIALS_PATH = config('FIREBASE_CREDENTIALS_PATH', default='config/firebase-service-account.json')
+# RECAPTCHA_SECRET_KEY = config('RECAPTCHA_SECRET_KEY', default='')
 
-# --------------------------
-# Meta details
-# --------------------------
-META_APP_ID=''
-META_APP_SECRET=''
-META_REDIRECT_URL=''
-META_VERIFICATION_TOKEN='12345'
-
-
-# --------------------------
-# Celery details
-# --------------------------
-CELERY_BROKER_URL = config('CELERY_BROKER_URL',default='redis://localhost:6379/1')
-CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND')
-CELERY_ACCEPT_CONTENT = ["json"]
-CELERY_TASK_SERIALIZER = "json"
-CELERY_RESULT_SERIALIZER = "json"
-CELERY_TASK_ACKS_LATE = True
+# # --------------------------
+# # Meta details
+# # --------------------------
+# META_APP_ID=''
+# META_APP_SECRET=''
+# META_REDIRECT_URL=''
+# META_VERIFICATION_TOKEN='12345'
 
 
-CELERY_BEAT_SCHEDULE = {
-    "flush_daily_comment_usage_every_3_hours": {
-        "task": "subscription_app.tasks.flush_daily_comment_usage",
-        "schedule": crontab(minute=0, hour=0),  # every mid night
-        "options": {"queue": "daily_usage_queue"},   # optional, specify queue
-    },
-}
+# # --------------------------
+# # Celery details
+# # --------------------------
+# CELERY_BROKER_URL = config('CELERY_BROKER_URL',default='redis://localhost:6379/1')
+# CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND')
+# CELERY_ACCEPT_CONTENT = ["json"]
+# CELERY_TASK_SERIALIZER = "json"
+# CELERY_RESULT_SERIALIZER = "json"
+# CELERY_TASK_ACKS_LATE = True
 
-# --------------------------
-# Open router details
-# --------------------------
-OPENROUTER_API_KEY = config('OPENROUTER_API_KEY', default='')
-SITE_URL = 'http://localhost:8001'
-#Temp
 
-Token = 'token'
+# CELERY_BEAT_SCHEDULE = {
+#     "flush_daily_comment_usage_every_3_hours": {
+#         "task": "subscription_app.tasks.flush_daily_comment_usage",
+#         "schedule": crontab(minute=0, hour=0),  # every mid night
+#         "options": {"queue": "daily_usage_queue"},   # optional, specify queue
+#     },
+# }
 
-LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'handlers': {
-        'file': {
-            'class': 'logging.FileHandler',
-            'filename': BASE_DIR / 'auth.log',
-            'formatter': 'verbose',
-        },
-    },
-    'formatters': {
-        'verbose': {
-            'format': '[{asctime}] {levelname} [{name}] {message}',
-            'style': '{',
-        },
-    },
-    'loggers': {
-        'auth': {
-            'handlers': ['file'],
-            'level': 'INFO',
-            'propagate': True,
-        },
-        'celery': {
-            'handlers': ['file'],
-            'level': 'INFO',
-            'propagate': True,
-        },
-        'django': {
-            'handlers': ['file'],
-            'level': 'INFO',
-            'propagate': True,
-        },
-    },
-}

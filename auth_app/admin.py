@@ -76,11 +76,6 @@ class UserAdmin(BaseUserAdmin):
                 form.base_fields['password'].widget = form.base_fields['password'].hidden_widget()
         return form
 
-admin.site.site_header = "Your App Administration"
-admin.site.site_title = "Your App Admin"
-admin.site.index_title = "Welcome to Your App Administration"
-
-
 @admin.register(DailyUsage)
 class DailyUsageAdmin(admin.ModelAdmin):
     list_display = (
@@ -95,3 +90,9 @@ class DailyUsageAdmin(admin.ModelAdmin):
     search_fields = ("user_id__mobile", "user_id__name")
     list_filter = ("usage_date", "user_id")
     ordering = ("-usage_date",)
+
+    
+admin.site.site_header = "Your App Administration"
+admin.site.site_title = "Your App Admin"
+admin.site.index_title = "Welcome to Your App Administration"
+
