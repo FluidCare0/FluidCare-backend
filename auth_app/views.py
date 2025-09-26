@@ -15,8 +15,8 @@ from django_ratelimit.exceptions import Ratelimited
 from django.conf import settings
 from django.utils import timezone
 
-from moderator_app.models import Tone, ToneSetting
-from .serializers import SendOTPSerializer, TrialSerializer, VerifyOTPSerializer, UserSerializer, ProfileInfoSerializer
+# from moderator_app.models import Tone, ToneSetting
+from .serializers import SendOTPSerializer, VerifyOTPSerializer, UserSerializer, ProfileInfoSerializer
 from .utils import send_otp, verify_otp
 
 User = get_user_model()
@@ -43,6 +43,25 @@ class VerifyOTPView(views.APIView):
                 defaults={'role': 'user'},
             )
 
+<<<<<<< HEAD
+=======
+            # master_tone = Tone.objects.get(name='Default')
+            # user_tone = Tone.objects.create(
+            #     name=f'{user.mobile} Default',
+            #     created_by = user
+            # )
+
+            # master_settings = ToneSetting.objects.filter(tone = master_tone)
+            # for setting in master_settings:
+            #     ToneSetting.objects.create(
+            #         tone=user_tone,
+            #         tone_type=setting.tone_type,
+            #         enabled=setting.enabled
+            #     )
+
+            # user.default_tone = user_tone
+
+>>>>>>> 1e6dd05f98dfb1c5e7205c985d2ab4d03566b94f
             needs_profile_completion = user.name == 'empty'
 
             # Generate tokens
