@@ -35,7 +35,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     plan_type         = models.CharField(max_length=100, blank=True)
     trial_start       = models.DateTimeField(null=True, blank=True)
     trial_end         = models.DateTimeField(null=True, blank=True)
-    default_tone      = models.ForeignKey('moderator_app.Tone', on_delete=models.SET_NULL, null=True, blank=True, related_name='default_for_users')
+    # default_tone      = models.ForeignKey('moderator_app.Tone', on_delete=models.SET_NULL, null=True, blank=True, related_name='default_for_users')
     is_active         = models.BooleanField(default=True)
     is_staff          = models.BooleanField(default=False)
     created_at        = models.DateTimeField(auto_now_add=True)
