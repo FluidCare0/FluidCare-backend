@@ -32,13 +32,6 @@ class User(AbstractBaseUser, PermissionsMixin):
     email             = models.EmailField(null=True, blank=True)
     is_email_verified = models.BooleanField(default=False)
     role              = models.CharField(max_length=20, choices=ROLE_CHOICES)
-    plan_type         = models.CharField(max_length=100, blank=True)
-<<<<<<< HEAD
-=======
-    trial_start       = models.DateTimeField(null=True, blank=True)
-    trial_end         = models.DateTimeField(null=True, blank=True)
-    # default_tone      = models.ForeignKey('moderator_app.Tone', on_delete=models.SET_NULL, null=True, blank=True, related_name='default_for_users')
->>>>>>> 1e6dd05f98dfb1c5e7205c985d2ab4d03566b94f
     is_active         = models.BooleanField(default=True)
     is_staff          = models.BooleanField(default=False)
     created_at        = models.DateTimeField(auto_now_add=True)
@@ -49,21 +42,6 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     objects = UserManager()
 
-    def start_trial(self):
-        if not self.trial_start:
-            now = timezone.now()
-            self.trial_start = now
-            self.trial_end   = now + timedelta(days=14)
-            self.save(update_fields=['trial_start', 'trial_end'])
-            return True
-        return False
-
     def __str__(self):
         return f"{self.name} ({self.mobile})"
 
-class DailyUsage(models.Model):
-    user_id = models.ForeignKey(User, on_delete=models.CASCADE)
-    usage_date = models.DateField(default=timezone.now)
-    comment_used = models.PositiveBigIntegerField()
-    photo_summaries_used = models.PositiveBigIntegerField()
-    video_summaries_used = models.PositiveBigIntegerField()
