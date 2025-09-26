@@ -43,22 +43,6 @@ class VerifyOTPView(views.APIView):
                 defaults={'role': 'user'},
             )
 
-            master_tone = Tone.objects.get(name='Default')
-            user_tone = Tone.objects.create(
-                name=f'{user.mobile} Default',
-                created_by = user
-            )
-
-            master_settings = ToneSetting.objects.filter(tone = master_tone)
-            for setting in master_settings:
-                ToneSetting.objects.create(
-                    tone=user_tone,
-                    tone_type=setting.tone_type,
-                    enabled=setting.enabled
-                )
-
-            user.default_tone = user_tone
-
             needs_profile_completion = user.name == 'empty'
 
             # Generate tokens
