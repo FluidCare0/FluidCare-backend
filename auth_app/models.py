@@ -1,25 +1,24 @@
-from datetime import timedelta
-from django.utils import timezone
 from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin, BaseUserManager
 from django.db import models
 
 class UserManager(BaseUserManager):
-    def create_user(self, mobile, name, role, **extra_fields):
-        if not mobile: raise ValueError('Mobile number required')
+    def create_user(self, mobile, name, role, password=None, **extra_fields):
+        if not mobile:
+            raise ValueError("Mobile number is required")
         user = self.model(mobile=mobile, name=name, role=role, **extra_fields)
-        user.set_unusable_password() 
-        user.save()
+        if password:
+            user.set_password(password)
+        else:
+            user.set_unusable_password()
+        user.save(using=self._db)
         return user
 
     def create_superuser(self, mobile, name, password=None, **extra_fields):
         if not password:
-            raise ValueError('Superuser must have a password')
-        user = self.create_user(mobile, name, role='root_admin', **extra_fields)
-        user.set_password(password)  # Set actual password instead of unusable
-        user.is_superuser = True
-        user.is_staff = True
-        user.save()
-        return user
+            raise ValueError("Superuser must have a password")
+        extra_fields.setdefault('is_staff', True)
+        extra_fields.setdefault('is_superuser', True)
+        return self.create_user(mobile, name, role='root_admin', password=password, **extra_fields)
 
 class User(AbstractBaseUser, PermissionsMixin):
     ROLE_CHOICES = [
@@ -27,8 +26,9 @@ class User(AbstractBaseUser, PermissionsMixin):
         ('manager','Manager'),
         ('user','User'),
     ]
+
     mobile            = models.CharField(max_length=15, unique=True)
-    name              = models.CharField(max_length=100,null=True, blank=True, default='empty')
+    name              = models.CharField(max_length=100, null=True, blank=True, default='empty')
     email             = models.EmailField(null=True, blank=True)
     is_email_verified = models.BooleanField(default=False)
     role              = models.CharField(max_length=20, choices=ROLE_CHOICES)
@@ -44,4 +44,3 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     def __str__(self):
         return f"{self.name} ({self.mobile})"
-
