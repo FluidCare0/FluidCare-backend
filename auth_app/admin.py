@@ -39,6 +39,9 @@ class UserAdmin(BaseUserAdmin):
     search_fields = ('mobile', 'name', 'email')
     ordering = ('-created_at',)
 
+    # Make non-editable fields read-only
+    readonly_fields = ('last_login', 'created_at', 'updated_at')
+
     fieldsets = (
         (None, {'fields': ('mobile', 'password')}),
         ('Personal Info', {'fields': ('name', 'email')}),
@@ -52,6 +55,7 @@ class UserAdmin(BaseUserAdmin):
             'fields': ('mobile', 'name', 'email', 'role', 'password1', 'password2', 'is_active', 'is_staff', 'is_superuser')}
         ),
     )
+
 
 # ---- Register ----
 admin.site.register(User, UserAdmin)

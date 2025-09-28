@@ -1,6 +1,3 @@
-# views.py
-
-from django.http import JsonResponse
 from rest_framework import status, permissions, views
 from rest_framework.response import Response
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -11,7 +8,6 @@ from rest_framework.decorators import api_view, permission_classes
 from django.contrib.auth import get_user_model
 from django.utils.decorators import method_decorator
 from django_ratelimit.decorators import ratelimit
-from django_ratelimit.exceptions import Ratelimited
 from django.conf import settings
 from django.utils import timezone
 
@@ -167,6 +163,7 @@ class SendOTPView(views.APIView):
                 }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         else:
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
         
 class CurrentUserView(views.APIView):
     permission_classes = [IsAuthenticated]

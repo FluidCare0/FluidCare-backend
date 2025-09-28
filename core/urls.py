@@ -9,7 +9,7 @@ schema_view = get_schema_view(
         title="API",
         default_version='v1',
         description="Central API documentation for all apps",
-        terms_of_service="https://github.com/kartik3165/BE-Project-frontend.git",
+        terms_of_service="https://github.com/fluidcare0",
         contact=openapi.Contact(email="Kartiknagare3165@gmail.com"),
         license=openapi.License(name="License"),
     ),
@@ -20,6 +20,9 @@ schema_view = get_schema_view(
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/auth/', include('auth_app.urls')),
+    path('api/senosr', include('sensor_app.urls')),
+    path('api/hospital', include('hospital_app.urls')),
+    path('api/survey', include('survey_app.urls')),
     re_path(r'^swagger(?P<format>\.json|\.yaml)$', schema_view.without_ui(cache_timeout=0), name='schema-json'),
     path('swagger/', schema_view.with_ui('swagger', cache_timeout=0), name='schema-swagger-ui'),
     path('redoc/', schema_view.with_ui('redoc', cache_timeout=0), name='schema-redoc'),

@@ -62,6 +62,9 @@ INSTALLED_APPS = [
 
     # Custom apps
     'auth_app',
+    'sensor_app',
+    'hospital_app',
+    'survey_app',
 
 ]
 
