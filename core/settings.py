@@ -2,6 +2,7 @@ import os
 import json
 from pathlib import Path
 from datetime import timedelta
+import uuid
 from decouple import config
 
 # --------------------------
@@ -46,6 +47,7 @@ CSRF_USE_SESSIONS = False
 # Apps
 # --------------------------
 INSTALLED_APPS = [
+    'daphne',
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -59,6 +61,7 @@ INSTALLED_APPS = [
     'corsheaders',
     'django_ratelimit',
     'drf_yasg',
+    'channels',
 
     # Custom apps
     'auth_app',
@@ -90,7 +93,7 @@ ROOT_URLCONF = 'core.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [os.path.join(BASE_DIR, 'templates')],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -104,6 +107,8 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'core.wsgi.application'
+
+ASGI_APPLICATION = 'core.asgi.application'
 
 # --------------------------
 # Database
@@ -189,21 +194,94 @@ SIMPLE_JWT = {
 # --------------------------
 # Logging
 # --------------------------
-# LOGGING = {
-#     'version': 1,
-#     'handlers': {
-#         'file': {
-#             'class': 'logging.FileHandler',
-#             'filename': BASE_DIR / 'auth.log',
-#         }
-#     },
-#     'loggers': {
-#         'auth': {
-#             'handlers': ['file'],
-#             'level': 'INFO',
-#         }
-#     },
-# }
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+
+    "formatters": {
+        "verbose": {
+            "format": "[{asctime}] {levelname} {name}: {message}",
+            "style": "{",
+        },
+        "simple": {
+            "format": "{levelname} {message}",
+            "style": "{",
+        },
+    },
+
+    "handlers": {
+        # --- Django Server ---
+        "django_file": {
+            "class": "logging.FileHandler",
+            "filename": os.path.join(LOG_DIR, "django.log"),
+            "formatter": "verbose",
+        },
+
+        # --- Celery ---
+        "celery_file": {
+            "class": "logging.FileHandler",
+            "filename": os.path.join(LOG_DIR, "celery.log"),
+            "formatter": "verbose",
+        },
+
+        # --- Channels ---
+        "channels_file": {
+            "class": "logging.FileHandler",
+            "filename": os.path.join(LOG_DIR, "channels.log"),
+            "formatter": "verbose",
+        },
+
+        # --- Console (optional) ---
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+        },
+
+        "mqtt_file": {
+            "class": "logging.FileHandler",
+            "filename": os.path.join(LOG_DIR, "mqtt.log"),
+            "formatter": "verbose",
+        },
+    },
+
+    "loggers": {
+        # Django server logger
+        "django": {
+            "handlers": ["django_file", "console"],
+            "level": "INFO",
+            "propagate": True,
+        },
+
+        # Celery specific logger
+        "celery": {
+            "handlers": ["celery_file", "console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+
+        # Channels specific logger
+        "channels": {
+            "handlers": ["channels_file", "console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        # ✅ New: MQTT logger
+        "mqtt": {
+            "handlers": ["mqtt_file", "console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+
+        # Root logger (optional catch-all)
+        "": {
+            "handlers": ["console"],
+            "level": "WARNING",
+        },
+    },
+}
 
 # --------------------------
 # Caches / Redis
@@ -221,11 +299,33 @@ CACHES = {
 REDIS_URL = config('REDIS_URL', default='')
 
 # --------------------------
+# Channels
+# --------------------------
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            "hosts": [('127.0.0.1', 6379)],
+        },
+    },
+}
+
+# --------------------------
 # Twilio
 # --------------------------
 TWILIO_ACCOUNT_SID = config('TWILIO_ACCOUNT_SID', default='')
 TWILIO_AUTH_TOKEN = config('TWILIO_AUTH_TOKEN', default='')
 TWILIO_FROM_NUMBER = config('TWILIO_PHONE_NUMBER', default='')
+
+# --------------------------
+# MQTT Client
+# --------------------------
+MQTT_BROKER = "test.mosquitto.org"
+MQTT_CLIENT_ID = f"django-backend-{uuid.uuid4().hex[:6]}"
+MQTT_USERNAME = ""    # leave empty for public broker
+MQTT_PASSWORD = "" 
+MQTT_PORT = 1883
+MQTT_TOPIC = 'be_project/#'
 
 # # --------------------------
 # # Email

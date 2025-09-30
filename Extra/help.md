@@ -1,0 +1,2 @@
+📚 API Endpoints Summary
+EndpointMethodDescription/api/sensors/latest/GETGet latest readings for all devices/api/sensors/by_floor/?floor=3GETGet readings by floor number/api/sensors/alerts/GETGet active alerts (last 5 min)/api/sensor-history/<device_id>/GETGet historical data/ws/sensors/WebSocketReal-time sensor updates
