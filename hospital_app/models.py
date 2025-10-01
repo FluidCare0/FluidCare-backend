@@ -45,6 +45,7 @@ class Bed(models.Model):
     ward = models.ForeignKey(Ward, on_delete=models.CASCADE, related_name='beds')
     bed_number = models.PositiveIntegerField()
     is_occupied = models.BooleanField(default=False)
+    
 
     def __str__(self):
         return f'Bed {self.bed_number} of Ward {self.ward.ward_number}'

@@ -8,13 +8,36 @@ class Device(models.Model):
     ]
     mac_address = models.CharField(max_length=150, unique=True)
     type = models.CharField(max_length=50, choices=TYPE, default='node')
-    status = models.BooleanField(default=False)
+    status = models.BooleanField(default=False)  # Active / Inactive
     installed_at = models.DateTimeField(auto_now_add=True)
     last_seen = models.DateTimeField(null=True, blank=True)
-    floor = models.ForeignKey('hospital_app.Floor', on_delete=models.SET_NULL, null = True, blank = True)
 
     def __str__(self):
-        return f'{self.type} ID-{self.mac_address}'
+        return f'{self.type.capitalize()} - {self.mac_address}'
+
+    @property
+    def current_assignment(self):
+        return self.assignments.filter(end_time__isnull=True).first()
+
+    @property
+    def current_bed(self):
+        assignment = self.current_assignment
+        return assignment.bed if assignment else None
+
+    @property
+    def current_ward(self):
+        bed = self.current_bed
+        return bed.ward if bed else None
+
+    @property
+    def current_floor(self):
+        ward = self.current_ward
+        return ward.floor if ward else None
+
+    @property
+    def assigned_by_user(self):
+        assignment = self.current_assignment
+        return assignment.user if assignment else None
     
 class FluidBag(models.Model):
     TYPE = [
