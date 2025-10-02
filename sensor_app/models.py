@@ -1,4 +1,5 @@
 from django.db import models
+import uuid
 
 class Device(models.Model):
     TYPE = [
@@ -6,6 +7,7 @@ class Device(models.Model):
         ('repeater', 'repeater'),
         ('master', 'master')
     ]
+    id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False, primary_key=True) 
     mac_address = models.CharField(max_length=150, unique=True)
     type = models.CharField(max_length=50, choices=TYPE, default='node')
     status = models.BooleanField(default=False)  # Active / Inactive
@@ -54,20 +56,13 @@ class FluidBag(models.Model):
     def __str__(self):
         return f'{self.type} on {self.device}'
     
-
 class SensorReading(models.Model):
-    STATUS_CHOICES = [
-        ('LOW', 'Low'),
-        ('NORMAL', 'Normal'),
-        ('HIGH', 'High'),
-        ('CRITICAL', 'Critical'),
-    ]
     fluidBag = models.ForeignKey(FluidBag, on_delete=models.CASCADE)
-    fluid_level = models.PositiveIntegerField(editable=False)
-    timestamp = models.DateTimeField(blank=True, null=True)
-    status = models.CharField(max_length=100, null=True, blank=True) # not decided yet to keep or not 
+    reading = models.PositiveIntegerField(editable=False)
+    timestamp = models.DateTimeField(blank=True, null=True, editable=False)
     via = models.BooleanField(default=False)
-    # repeater_mac = models.CharField(max_length=150, null=True, blank=True)
+    battery_percent = models.FloatField(null=True, blank=True)
+    repeater_mac = models.CharField(max_length=150, null=True, blank=True)
     master_mac = models.CharField(max_length=150, null=True, blank=True)
 
     class Meta:
@@ -78,7 +73,7 @@ class SensorReading(models.Model):
         ]
     
     def __str__(self):
-        return f'{self.fluidBag} - {self.fluid_level}ml at {self.timestamp}'
+        return f'{self.fluidBag} - {self.reading}ml at {self.timestamp}'
 
     
 # {

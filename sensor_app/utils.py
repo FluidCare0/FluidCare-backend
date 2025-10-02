@@ -1,10 +1,12 @@
 import logging
 from django.utils import timezone
-from datetime import datetime
+from datetime import datetime, timezone as date_timezone
 from sensor_app.models import Device, FluidBag, SensorReading
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
+from django.core.cache import cache
 
+CACHE_TIMEOUT = 60 * 10 
 
 mqtt_logger = logging.getLogger('mqtt')
 django_logger = logging.getLogger('django')
@@ -17,42 +19,48 @@ def determine_status(load, fluid_bag):
     else:
         return 'NORMAL'
     
+
+
 def process_mqtt_message(mqtt_data):
     try:
         node_id = mqtt_data.get('node_id')
-        load = mqtt_data.get('load')
+        node_mac = mqtt_data.get('node_mac')
+        reading = mqtt_data.get('reading')
+        battery_percent = mqtt_data.get('battery_percent')
         timestamp_unix = mqtt_data.get('timestamp')
         via = bool(mqtt_data.get('via'))
+        repeater_mac = mqtt_data.get('repeater_mac')
         master_mac = mqtt_data.get('master_mac')
 
         timestamp = datetime.fromtimestamp(timestamp_unix, tz=timezone.utc)
-        device = Device.objects.get(mac_address=str(node_id), type='node')
-        fluid_bag = FluidBag.objects.filter(device=device).first()
+        device = get_device(str(node_id))
+        fluid_bag = get_fluid_bag(device)
 
         if not fluid_bag:
             print(f'No fluid bag found for device {node_id}')
             return None
         
-        status = determine_status(load, fluid_bag)
+        status = determine_status(reading, fluid_bag)
         
         if status in ['LOW', 'HIGH']:
             from sensor_app.tasks import send_alert_notification
             send_alert_notification.delay(node_id)
 
-        sensor_reading = SensorReading.objects.create(
-            FluidBag = fluid_bag,
-            fluid_level = load,
-            timestamp = timestamp,
-            status = status,
-            via = via,
-            master_mac = str(master_mac) if master_mac else None
-        )
-        
-        device.status = True
-        device.last_seen = timestamp
-        device.save()
 
-        return sensor_reading
+        # sensor_reading = SensorReading.objects.create(
+        #     FluidBag = fluid_bag,
+        #     fluid_level = reading,
+        #     timestamp = timestamp,
+        #     status = status,
+        #     via = via,
+        #     master_mac = str(master_mac) if master_mac else None
+        # )
+        
+        # device.status = True
+        # device.last_seen = timestamp
+        # device.save()
+
+        # return sensor_reading
     
     except Device.DoesNotExist:
         print(f'Device with MAC address {node_id} nor found ')

@@ -7,7 +7,7 @@ from .models import Device, FluidBag, SensorReading
 class SensorReadingInline(admin.TabularInline):
     model = SensorReading
     extra = 0  # do not show extra empty forms
-    readonly_fields = ('fluid_level', 'timestamp', 'status')
+    readonly_fields = ('reading', 'timestamp', 'status')
     can_delete = False  # prevent deletion from inline (optional)
 
 
@@ -39,7 +39,7 @@ class DeviceAdmin(admin.ModelAdmin):
 # ------------------------
 @admin.register(SensorReading)
 class SensorReadingAdmin(admin.ModelAdmin):
-    list_display = ('id', 'fluidBag', 'fluid_level', 'status', 'timestamp')
+    list_display = ('id', 'fluidBag', 'reading', 'status', 'timestamp')
     list_filter = ('fluidBag', 'status')
     search_fields = ('fluidBag__device__mac_address',)
-    readonly_fields = ('fluid_level', 'timestamp', 'status')
+    readonly_fields = ('reading', 'timestamp', 'status')

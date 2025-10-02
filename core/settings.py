@@ -60,6 +60,7 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'django_ratelimit',
+    'django_celery_results',
     'drf_yasg',
     'channels',
 
@@ -356,12 +357,12 @@ MQTT_TOPIC = 'be_project/#'
 # # --------------------------
 # # Celery details
 # # --------------------------
-# CELERY_BROKER_URL = config('CELERY_BROKER_URL',default='redis://localhost:6379/1')
-# CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND')
-# CELERY_ACCEPT_CONTENT = ["json"]
-# CELERY_TASK_SERIALIZER = "json"
-# CELERY_RESULT_SERIALIZER = "json"
-# CELERY_TASK_ACKS_LATE = True
+CELERY_BROKER_URL = config('CELERY_BROKER_URL',default='redis://localhost:6379/1')
+CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND')
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TASK_ACKS_LATE = True
 
 
 # CELERY_BEAT_SCHEDULE = {
