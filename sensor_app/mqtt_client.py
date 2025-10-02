@@ -30,48 +30,6 @@ class MQTTClient:
 
         if settings.MQTT_USERNAME and settings.MQTT_PASSWORD:
             self.client.username_pw_set(settings.MQTT_USERNAME, settings.MQTT_PASSWORD)
-        
-    # def broadcast_sensor_update(self, sensor_reading, mqtt_data):
-    #     try:
-    #         bed_info = get_bed_info(sensor_reading.fluidBag.device)
-            
-    #         message = {
-    #             'type': 'sensor_update',
-    #             'data': {
-    #                 'node_id': mqtt_data.get('node_id'),
-    #                 'device_id': sensor_reading.fluidBag.device.mac_address,
-    #                 'fluid_bag_type': sensor_reading.fluidBag.type,
-    #                 'fluid_level': sensor_reading.fluid_level,
-    #                 'status': sensor_reading.status,
-    #                 'timestamp': sensor_reading.timestamp.isoformat(),
-    #                 'floor': mqtt_data.get('floor'),
-    #                 'bed_info': bed_info,
-    #             }
-    #         }
-            
-    #         # Send to general monitoring group
-    #         async_to_sync(self.channel_layer.group_send)( # type: ignore
-    #             'sensor_monitoring',
-    #             {
-    #                 'type': 'sensor_message',
-    #                 'message': message
-    #             }
-    #         )
-            
-    #         # Send to floor-specific group if floor exists
-    #         if mqtt_data.get('floor'):
-    #             async_to_sync(self.channel_layer.group_send)( # type: ignore
-    #                 f'floor_{mqtt_data.get("floor")}',
-    #                 {
-    #                     'type': 'sensor_message',
-    #                     'message': message
-    #                 }
-    #             )
-            
-    #         mqtt_logger.info(f"Broadcast sensor update for node {mqtt_data.get('node_id')}")
-            
-    #     except Exception as e:
-    #         mqtt_logger.error(f"Error broadcasting sensor update: {e}")
 
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
@@ -89,21 +47,30 @@ class MQTTClient:
         try:
             # Parse MQTT message
             payload = json.loads(msg.payload.decode())
-            mqtt_logger.info(f"Received message: {payload}")
+            mqtt_logger.info(f"📨 Received message: {payload}")
 
-            process_alert.delay(payload)
+            # Trigger alert processing
+            mqtt_logger.info(f"🔔 Calling process_alert for node: {payload.get('node_id')}")
+            result = process_alert.delay(payload)
+            mqtt_logger.info(f"✅ Alert task queued with ID: {result.id}")
 
+            # Add to batch queue
             r.lpush(QUEUE_KEY, json.dumps(payload))
-
             queue_len = r.llen(QUEUE_KEY)
+            mqtt_logger.info(f"📊 Queue length: {queue_len}")
+
+            # Trigger batch if threshold reached
             if queue_len >= BATCH_SIZE:
+                mqtt_logger.info(f"🎯 Batch size reached ({queue_len} >= {BATCH_SIZE}), triggering batch")
                 trigger_batch_task()
+            else:
+                mqtt_logger.debug(f"⏳ Waiting for batch ({queue_len}/{BATCH_SIZE})")
         
-        except json.JSONDecodeError:
-            mqtt_logger.error(f"Invalid JSON in MQTT message: {msg.payload}")
+        except json.JSONDecodeError as je:
+            mqtt_logger.error(f"❌ Invalid JSON in MQTT message: {msg.payload}, Error: {je}")
 
         except Exception as e:
-            mqtt_logger.error(f'Error in on_message: {e}')
+            mqtt_logger.error(f'❌ Error in on_message: {e}', exc_info=True)
             
         
     def connect(self):
@@ -112,7 +79,7 @@ class MQTTClient:
             self.client.loop_start()
             mqtt_logger.info('MQTT Client Started')
         except Exception as e:
-            mqtt_logger.error(f'Failed to connect to mqtt broker')
+            mqtt_logger.error(f'Failed to connect to mqtt broker: {e}')
 
     def disconnect(self):
         """Disconnect from MQTT broker"""
@@ -128,4 +95,3 @@ def get_mqtt_client():
         mqtt_client = MQTTClient()
         mqtt_client.connect()
     return mqtt_client
-        

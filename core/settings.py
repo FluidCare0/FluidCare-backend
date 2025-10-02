@@ -66,7 +66,7 @@ INSTALLED_APPS = [
 
     # Custom apps
     'auth_app',
-    'sensor_app',
+    'sensor_app.apps.SensorAppConfig',
     'hospital_app',
     'survey_app',
 
@@ -363,7 +363,30 @@ CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TASK_ACKS_LATE = True
+CELERY_TIMEZONE = 'UTC'
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 30 * 60 
 
+CELERY_TASK_DEFAULT_QUEUE = 'celery'
+CELERY_TASK_DEFAULT_EXCHANGE = 'celery'
+CELERY_TASK_DEFAULT_ROUTING_KEY = 'celery'
+
+CELERY_TASK_QUEUES = {
+    'celery': {
+        'exchange': 'celery',
+        'routing_key': 'celery',
+    },
+    'high_priority': {
+        'exchange': 'high_priority',
+        'routing_key': 'high_priority',
+    }
+}
+
+CELERY_TASK_ROUTES = {
+    'sensor_app.tasks.process_alert': {'queue': 'high_priority'},
+    'sensor_app.tasks.process_sensor_batch': {'queue': 'celery'},
+    'sensor_app.tasks.send_alert_notification': {'queue': 'high_priority'},
+}
 
 # CELERY_BEAT_SCHEDULE = {
 #     "flush_daily_comment_usage_every_3_hours": {

@@ -50,8 +50,8 @@ class FluidBag(models.Model):
     device = models.ForeignKey(Device, on_delete=models.CASCADE, related_name='fluidBag')
     type = models.CharField(max_length=50, choices=TYPE, null=True, blank=True)
     capacity_ml = models.PositiveBigIntegerField()
-    threshold_low = models.PositiveIntegerField()
-    threshold_high = models.PositiveIntegerField()
+    threshold_low = models.PositiveIntegerField(blank=True, null=True)
+    threshold_high = models.PositiveIntegerField(blank=True, null=True)
 
     def __str__(self):
         return f'{self.type} on {self.device}'

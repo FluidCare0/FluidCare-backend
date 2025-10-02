@@ -21,7 +21,12 @@ A Django project with JWT authentication, REST API support, CORS handling, Redis
 
 ### Running Celery
 
-```celery -A core worker -l info```
+* ```celery -A core worker -l info```
+
+* ```celery -A core worker -l info -Q high_priority```
+
+* ```celery -A core beat -l info```
+
 
 ### Option 1: Manual Start (Development)
 
