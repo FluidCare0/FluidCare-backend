@@ -2,6 +2,7 @@ import os
 from celery import Celery
 from celery.signals import setup_logging
 import logging
+from celery.schedules import crontab
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
 
@@ -22,8 +23,8 @@ def debug_task(self):
     print(f'Request: {self.request!r}')
 
 app.conf.beat_schedule = {
-    "flush-sensor-queue-every-5-sec": {
-        "task": "sensor_app.task.process_sensor_batch",
-        "schedule": 5.0,
+    'process-sensor-batch-every-3-seconds': {
+        'task': 'sensor_app.tasks.process_sensor_batch',
+        'schedule': 3.0,  # every 3 seconds
     },
 }

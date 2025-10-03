@@ -1,4 +1,5 @@
 import json
+import uuid
 import redis
 import logging
 from celery import shared_task
@@ -15,7 +16,8 @@ r = redis.Redis.from_url(settings.REDIS_URL)
 QUEUE_KEY = "sensor_queue"
 LOCK_KEY = "sensor_batch_lock"
 DEBOUNCE_KEY = "sensor_batch_debounce"
-BATCH_SIZE = 500
+BATCH_SIZE = 1000  # Threshold to trigger immediate processing
+MAX_BATCH_PROCESS = 5000  # Maximum items to process per periodic run
 
 
 @shared_task(queue='high_priority')
@@ -63,7 +65,6 @@ def process_alert(payload):
         celery_logger.error(f'❌ Alert processing failed: {e}', exc_info=True)
         return 'ERROR'
 
-
 def acquire_lock(lock_key, timeout=15):
     return r.set(lock_key, "1", nx=True, ex=timeout)
 
@@ -72,89 +73,130 @@ def release_lock(lock_key):
     r.delete(lock_key)
 
 
-@shared_task(bind=True, max_retries=3, default_retry_delay=5, queue='celery')
+@shared_task(bind=True, max_retries=3, default_retry_delay=5, queue="celery")
 def process_sensor_batch(self):
     celery_logger.info("📦 Starting batch processing...")
-  
+
+    # Acquire lock to prevent multiple workers from processing same queue
     if not acquire_lock(LOCK_KEY, timeout=20):
-        celery_logger.info("🔒 Lock already acquired, skipping batch")
-        return
+        celery_logger.info("🔒 Lock already acquired, skipping this run")
+        return "LOCKED"
 
     try:
+        queue_len = r.llen(QUEUE_KEY)
+        celery_logger.info(f"📊 Current queue length: {queue_len}")
+
+        if queue_len == 0:
+            celery_logger.info("📭 No data in queue")
+            return "EMPTY"
+
+        batch_size = min(queue_len, MAX_BATCH_PROCESS)
+        celery_logger.info(f"🎯 Processing {batch_size} items from queue")
+
         batch = []
-        for _ in range(BATCH_SIZE):
+        for _ in range(batch_size):
             data = r.rpop(QUEUE_KEY)
             if not data:
                 break
-            batch.append(json.loads(data))
+            try:
+                batch.append(json.loads(data))
+            except json.JSONDecodeError as je:
+                celery_logger.error(f"❌ Invalid JSON in queue: {data}, Error: {je}")
 
         if not batch:
-            celery_logger.info("📭 No data in queue")
-            return
+            celery_logger.info("📭 No valid data in queue after parsing")
+            return "NO_VALID_DATA"
 
-        celery_logger.info(f"📊 Processing batch of {len(batch)} messages")
-
-        # Fetch all devices & fluidbags in one go
-        node_ids = {str(item["node_id"]) for item in batch}
+        # Convert node_ids to UUID for DB lookup
+        node_ids = {uuid.UUID(item["node_id"]) for item in batch}
         devices = Device.objects.filter(id__in=node_ids).in_bulk(field_name="id")
-        fluid_bags = FluidBag.objects.filter(device_id__in=node_ids).in_bulk(field_name="device_id")
 
-        celery_logger.info(f"Found {len(devices)} devices and {len(fluid_bags)} fluid bags")
+        # Fetch fluid bags and map device → first fluid bag
+        fluid_bags_qs = FluidBag.objects.filter(device_id__in=node_ids).select_related("device")
+        fluid_bags = {}
+        for fb in fluid_bags_qs:
+            if fb.device_id not in fluid_bags:
+                fluid_bags[fb.device_id] = fb
+
+        celery_logger.info(f"✅ Found {len(devices)} devices and {len(fluid_bags)} fluid bags")
 
         readings_to_insert = []
+        errors = 0
+
         for msg in batch:
-            node_id = str(msg["node_id"])
-            device = devices.get(node_id)
-            if not device:
-                celery_logger.warning(f"⚠️ Device {node_id} not found in batch")
-                continue
+            try:
+                node_id = uuid.UUID(msg["node_id"])
+                device = devices.get(node_id)
+                if not device:
+                    celery_logger.warning(f"⚠️ Device {node_id} not found in batch")
+                    errors += 1
+                    continue
 
-            fluid_bag = fluid_bags.get(device.id)
-            if not fluid_bag:
-                celery_logger.warning(f"⚠️ FluidBag not found for device {node_id}")
-                continue
+                fluid_bag = fluid_bags.get(device.id)
+                if not fluid_bag:
+                    celery_logger.warning(f"⚠️ FluidBag not found for device {node_id}")
+                    errors += 1
+                    continue
 
-            ts = datetime.fromtimestamp(msg["timestamp"], tz=timezone.utc)
-            
-            reading_value = msg.get("reading")
-            if reading_value is None:
-                celery_logger.warning(f"⚠️ No 'reading' field in message: {msg}")
-                continue
+                ts = datetime.fromtimestamp(msg["timestamp"], tz=timezone.utc)
+                reading_value = msg.get("reading")
+                if reading_value is None:
+                    celery_logger.warning(f"⚠️ No 'reading' field in message: {msg}")
+                    errors += 1
+                    continue
 
-            readings_to_insert.append(
-                SensorReading(
-                    fluidBag=fluid_bag,
-                    reading=int(reading_value),
-                    timestamp=ts,
-                    via=bool(msg.get("via")),
-                    battery_percent=msg.get("battery_percent"),
-                    repeater_mac=msg.get("repeater_mac"),
-                    master_mac=msg.get("master_mac"),
+                readings_to_insert.append(
+                    SensorReading(
+                        fluidBag=fluid_bag,
+                        reading=int(reading_value),
+                        timestamp=ts,
+                        via=bool(msg.get("via")),
+                        battery_percent=msg.get("battery_percent"),
+                        repeater_mac=msg.get("repeater_mac"),
+                        master_mac=msg.get("master_mac"),
+                    )
                 )
-            )
 
+            except Exception as msg_error:
+                celery_logger.error(f"❌ Error processing message {msg}: {msg_error}")
+                errors += 1
+
+        # Bulk insert
         if readings_to_insert:
-            with transaction.atomic():
-                SensorReading.objects.bulk_create(readings_to_insert, ignore_conflicts=True)
-            celery_logger.info(f"✅ Bulk inserted {len(readings_to_insert)} readings")
+            try:
+                with transaction.atomic():
+                    SensorReading.objects.bulk_create(readings_to_insert, ignore_conflicts=True)
+                celery_logger.info(f"✅ Successfully inserted {len(readings_to_insert)} readings")
+                if errors > 0:
+                    celery_logger.warning(f"⚠️ {errors} messages had errors")
+                return f"SUCCESS: {len(readings_to_insert)} inserted, {errors} errors"
+            except DatabaseError as db_err:
+                celery_logger.error(f"❌ DB Error during bulk insert: {db_err}")
+                # Push batch back to Redis for retry
+                for msg in batch:
+                    r.lpush(QUEUE_KEY, json.dumps(msg))
+                raise  # triggers Celery retry
         else:
-            celery_logger.warning("⚠️ No valid readings to insert")
+            celery_logger.warning(f"⚠️ No valid readings to insert ({errors} errors)")
+            return f"NO_VALID_READINGS: {errors} errors"
 
     except DatabaseError as db_err:
-        celery_logger.error(f"❌ DB Error during batch insert: {db_err}")
+        celery_logger.error(f"❌ DB Error during batch processing: {db_err}")
         self.retry(exc=db_err)
 
     except Exception as e:
-        celery_logger.error(f"❌ Unexpected error in batch insert: {e}", exc_info=True)
+        celery_logger.error(f"❌ Unexpected error in batch processing: {e}", exc_info=True)
+        return f"ERROR: {str(e)}"
 
     finally:
         release_lock(LOCK_KEY)
-
+        
 
 def trigger_batch_task():
+    """Trigger batch processing manually (when queue is full)"""
     if not r.exists(DEBOUNCE_KEY):
-        r.set(DEBOUNCE_KEY, "1", ex=3)
-        celery_logger.info("🚀 Triggering batch task")
+        r.set(DEBOUNCE_KEY, "1", ex=2)  # Reduced debounce time
+        celery_logger.info("🚀 Manually triggering batch task")
         process_sensor_batch.delay()
     else:
         celery_logger.debug("⏸️ Batch task debounced")

@@ -182,7 +182,7 @@ DB_HOST=localhost
 DB_PORT=5432
 
 # Redis URL
-REDIS_URL=redis://127.0.0.1:6379/2
+REDIS_URL=redis://127.0.0.1:6379/0
 
 # CORS Settings
 CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
