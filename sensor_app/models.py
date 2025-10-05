@@ -19,7 +19,7 @@ class Device(models.Model):
 
     @property
     def current_assignment(self):
-        return self.assignments.filter(end_time__isnull=True).first()
+        return self.assignments.filter(end_time__isnull=True).first() # type: ignore
 
     @property
     def current_bed(self):
@@ -75,13 +75,19 @@ class SensorReading(models.Model):
     def __str__(self):
         return f'{self.fluidBag} - {self.reading}ml at {self.timestamp}'
 
-    
+
+
+# be_project/node_53b987544add496e80208d6b1606a75e
+
 # {
-#   "node_id": 7,
-#   "floor": 3, (in question to add not added in utlis.py file of sensor_app)
-#   "load": 3728,
-#   "timestamp": 1759150249,
-#   "via": 1,
-#   "repeater_mac": 170, (no need of repeater mac because thier will be multiple repeator)
-#   "master_mac": 187
+#   "node_id": "53b987544add496e80208d6b1606a75e",
+#   "node_mac": "AA:BB:CC:DD:EE:01",
+#   "reading": 66.76,
+#   "battery_percent": 65.07,
+#   "timestamp": 1859550537,
+#   "date": "2025-10-04",
+#   "time": "15:44:12",
+#   "via": 0,
+#   "repeater_mac": null,
+#   "master_mac": "11:22:33:44:55:01"
 # }
