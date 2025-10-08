@@ -68,7 +68,6 @@ def process_alert(payload):
 def acquire_lock(lock_key, timeout=15):
     return r.set(lock_key, "1", nx=True, ex=timeout)
 
-
 def release_lock(lock_key):
     r.delete(lock_key)
 
