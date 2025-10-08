@@ -48,6 +48,7 @@ class FluidBag(models.Model):
         ('urine_bag', 'Urine Bag'),
     ]
     device = models.ForeignKey(Device, on_delete=models.CASCADE, related_name='fluidBag')
+    
     type = models.CharField(max_length=50, choices=TYPE, null=True, blank=True)
     capacity_ml = models.PositiveBigIntegerField()
     threshold_low = models.PositiveIntegerField(blank=True, null=True)

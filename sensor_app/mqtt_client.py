@@ -8,8 +8,8 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 import redis
 from sensor_app.models import Device, FluidBag, SensorReading
-from sensor_app.tasks import process_alert, trigger_batch_task
-from sensor_app.utils import process_mqtt_message, get_bed_info
+from sensor_app.tasks import trigger_batch_task
+from notification_app.tasks import process_alert
 
 r = redis.Redis.from_url(settings.REDIS_URL)
 QUEUE_KEY = "sensor_queue"
@@ -45,26 +45,28 @@ class MQTTClient:
 
     def on_message(self, client, userdata, msg):
         try:
-            # Parse MQTT message
-            payload = json.loads(msg.payload.decode())
-            mqtt_logger.info(f"📨 Received message: {payload}")
+            topic = msg.topic
+            if 'be_project/node_' in topic:
+                mqtt_logger.warning(f'Topic is 1')
+                payload = json.loads(msg.payload.decode())
+                mqtt_logger.info(f"📨 Received message: {payload}")
 
-            # Trigger alert processing
-            mqtt_logger.info(f"🔔 Calling process_alert for node: {payload.get('node_id')}")
-            result = process_alert.delay(payload)
-            mqtt_logger.info(f"✅ Alert task queued with ID: {result.id}")
+                mqtt_logger.info(f"🔔 Calling process_alert for node: {payload.get('node_id')}")
+                result = process_alert.delay(payload) # type: ignore
+                mqtt_logger.info(f"✅ Alert task queued with ID: {result.id}")
 
-            # Add to batch queue
-            r.lpush(QUEUE_KEY, json.dumps(payload))
-            queue_len = r.llen(QUEUE_KEY)
-            mqtt_logger.info(f"📊 Queue length: {queue_len}")
+                r.lpush(QUEUE_KEY, json.dumps(payload))
+                queue_len = r.llen(QUEUE_KEY)
+                mqtt_logger.info(f"📊 Queue length: {queue_len}")
 
-            # Trigger batch if threshold reached
-            if queue_len >= BATCH_SIZE:
-                mqtt_logger.info(f"🎯 Batch size reached ({queue_len} >= {BATCH_SIZE}), triggering batch")
-                trigger_batch_task()
-            else:
-                mqtt_logger.debug(f"⏳ Waiting for batch ({queue_len}/{BATCH_SIZE})")
+                if queue_len >= BATCH_SIZE: # type: ignore
+                    mqtt_logger.info(f"🎯 Batch size reached ({queue_len} >= {BATCH_SIZE}), triggering batch")
+                    trigger_batch_task()
+                else:
+                    mqtt_logger.debug(f"⏳ Waiting for batch ({queue_len}/{BATCH_SIZE})")
+            
+            elif 'be_project/request_uuid_' in topic:
+                pass
         
         except json.JSONDecodeError as je:
             mqtt_logger.error(f"❌ Invalid JSON in MQTT message: {msg.payload}, Error: {je}")
@@ -82,7 +84,6 @@ class MQTTClient:
             mqtt_logger.error(f'Failed to connect to mqtt broker: {e}')
 
     def disconnect(self):
-        """Disconnect from MQTT broker"""
         self.client.loop_stop()
         self.client.disconnect()
         mqtt_logger.info("MQTT Client disconnected")

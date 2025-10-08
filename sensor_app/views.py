@@ -106,3 +106,5 @@ def sensor_history(request, device_id):
     ).values('fluid_level', 'timestamp', 'status').order_by('timestamp')
     
     return Response(list(readings))
+
+

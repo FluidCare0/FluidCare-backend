@@ -3,11 +3,12 @@ import uuid
 import redis
 import logging
 from celery import shared_task
-from datetime import datetime, timezone
+from datetime import datetime, timezone as dt_timezone
 from sensor_app.helperFunction import get_device, get_fluid_bag
 from sensor_app.models import Device, FluidBag, SensorReading
 from django.conf import settings
 from django.db import transaction, DatabaseError
+from django.utils import timezone 
 
 celery_logger = logging.getLogger('celery')
 
@@ -19,51 +20,6 @@ DEBOUNCE_KEY = "sensor_batch_debounce"
 BATCH_SIZE = 1000  # Threshold to trigger immediate processing
 MAX_BATCH_PROCESS = 5000  # Maximum items to process per periodic run
 
-
-@shared_task(queue='high_priority')
-def process_alert(payload):
-    try:
-        celery_logger.info(f"🔔 Processing alert for payload: {payload}")
-        
-        node_id = payload.get('node_id')
-        reading = payload.get('reading')
-        
-        if not reading:
-            celery_logger.warning(f"No reading value in payload")
-            return 'NO_READING'
-        
-        device = get_device(node_id)
-        fluid_bag = get_fluid_bag(device)
-        
-        if not fluid_bag:
-            celery_logger.warning(f"No fluid bag found for device {node_id}")
-            return 'NO_FLUID_BAG'
-
-        bag_type = fluid_bag.type.lower()
-    
-        if bag_type == 'iv_bag':
-            if reading <= fluid_bag.threshold_low:
-                celery_logger.warning(f'⚠️ ALERT: IV bag level LOW for device {node_id}')
-                return 'ALERT: IV bag level LOW'
-            else:
-                return 'NORMAL'
-        
-        elif bag_type in ('blood_bag', 'urine_bag'):
-            if reading >= fluid_bag.threshold_high:
-                celery_logger.warning(f'⚠️ ALERT: {bag_type} level HIGH for device {node_id}')
-                return f'ALERT: {bag_type.replace("_", " ").title()} level HIGH'
-            else:
-                return 'NORMAL'
-        
-        else:
-            return 'NORMAL'
-        
-    except Device.DoesNotExist:
-        celery_logger.error(f'❌ Device not found: {node_id}')
-        return 'DEVICE_NOT_FOUND'
-    except Exception as e:
-        celery_logger.error(f'❌ Alert processing failed: {e}', exc_info=True)
-        return 'ERROR'
 
 def acquire_lock(lock_key, timeout=15):
     return r.set(lock_key, "1", nx=True, ex=timeout)
@@ -86,10 +42,10 @@ def process_sensor_batch(self):
         celery_logger.info(f"📊 Current queue length: {queue_len}")
 
         if queue_len == 0:
-            celery_logger.info("📭 No data in queue")
+            celery_logger.info("🔭 No data in queue")
             return "EMPTY"
 
-        batch_size = min(queue_len, MAX_BATCH_PROCESS)
+        batch_size = min(queue_len, MAX_BATCH_PROCESS) # type: ignore
         celery_logger.info(f"🎯 Processing {batch_size} items from queue")
 
         batch = []
@@ -98,12 +54,12 @@ def process_sensor_batch(self):
             if not data:
                 break
             try:
-                batch.append(json.loads(data))
+                batch.append(json.loads(data)) # type: ignore
             except json.JSONDecodeError as je:
                 celery_logger.error(f"❌ Invalid JSON in queue: {data}, Error: {je}")
 
         if not batch:
-            celery_logger.info("📭 No valid data in queue after parsing")
+            celery_logger.info("🔭 No valid data in queue after parsing")
             return "NO_VALID_DATA"
 
         # Convert node_ids to UUID for DB lookup
@@ -114,8 +70,8 @@ def process_sensor_batch(self):
         fluid_bags_qs = FluidBag.objects.filter(device_id__in=node_ids).select_related("device")
         fluid_bags = {}
         for fb in fluid_bags_qs:
-            if fb.device_id not in fluid_bags:
-                fluid_bags[fb.device_id] = fb
+            if fb.device_id not in fluid_bags: # type: ignore
+                fluid_bags[fb.device_id] = fb # type: ignore
 
         celery_logger.info(f"✅ Found {len(devices)} devices and {len(fluid_bags)} fluid bags")
 
@@ -137,7 +93,20 @@ def process_sensor_batch(self):
                     errors += 1
                     continue
 
-                ts = datetime.fromtimestamp(msg["timestamp"], tz=timezone.utc)
+                datetime_str = msg["datetime"]  # e.g., "2025-10-06 03:54:26 PM"
+                datetime_str = datetime_str.replace('p.m.', 'PM').replace('a.m.', 'AM')
+
+                try:
+                    ts = datetime.strptime(datetime_str, "%b. %d, %Y, %I:%M:%S %p")
+                except ValueError:
+                    import re
+                    datetime_str = re.sub(r'(\w{3}\.) (\d),', r'\1 0\2,', datetime_str)
+                    datetime_str = re.sub(r', (\d):', r', 0\1:', datetime_str)
+                    ts = datetime.strptime(datetime_str, "%b. %d, %Y, %I:%M:%S %p")
+                
+                # Make timezone-aware using UTC
+                ts = timezone.make_aware(ts, timezone=dt_timezone.utc)
+
                 reading_value = msg.get("reading")
                 if reading_value is None:
                     celery_logger.warning(f"⚠️ No 'reading' field in message: {msg}")
@@ -192,17 +161,11 @@ def process_sensor_batch(self):
         
 
 def trigger_batch_task():
-    """Trigger batch processing manually (when queue is full)"""
     if not r.exists(DEBOUNCE_KEY):
         r.set(DEBOUNCE_KEY, "1", ex=2)  # Reduced debounce time
         celery_logger.info("🚀 Manually triggering batch task")
-        process_sensor_batch.delay()
+        process_sensor_batch.delay() # type: ignore
     else:
         celery_logger.debug("⏸️ Batch task debounced")
 
 
-@shared_task(queue='high_priority')
-def send_alert_notification(node_id=None):
-    celery_logger.info(f"📧 Alert notification for node {node_id}")
-    # TODO: Implement alert notification logic
-    pass

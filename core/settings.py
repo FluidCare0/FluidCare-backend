@@ -70,6 +70,7 @@ INSTALLED_APPS = [
     'sensor_app.apps.SensorAppConfig',
     'hospital_app',
     'survey_app',
+    'notification_app',
 
 ]
 
