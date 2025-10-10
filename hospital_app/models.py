@@ -26,6 +26,7 @@ class Patient(models.Model):
 
 class Floor(models.Model):
     floor_number = models.PositiveIntegerField(null=True)
+    name = models.CharField(max_length=150, null=True, blank=True)
     description = models.TextField(blank=True, null=True)
 
     def __str__(self):

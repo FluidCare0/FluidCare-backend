@@ -4,14 +4,21 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import api_view, permission_classes
+from rest_framework.views import APIView
 
 from django.contrib.auth import get_user_model
 from django.utils.decorators import method_decorator
 from django_ratelimit.decorators import ratelimit
+from django.shortcuts import get_object_or_404
 from django.conf import settings
 from django.utils import timezone
 
-from .serializers import SendOTPSerializer, VerifyOTPSerializer, UserSerializer, ProfileInfoSerializer
+from .serializers import (
+            SendOTPSerializer, VerifyOTPSerializer, 
+            UserSerializer, ProfileInfoSerializer,
+            UserManagementSerializer, CreateUserSerializer,
+)
+
 from .utils import send_otp, verify_otp
 
 User = get_user_model()
@@ -163,8 +170,7 @@ class SendOTPView(views.APIView):
                 }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         else:
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-        
+            
 class CurrentUserView(views.APIView):
     permission_classes = [IsAuthenticated]
     
@@ -172,3 +178,146 @@ class CurrentUserView(views.APIView):
         serializer = UserSerializer(request.user)
         return Response(serializer.data) 
 
+class UserListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        # Only root_admin and manager can view users
+        if request.user.role not in ['root_admin', 'manager']:
+            return Response({
+                "detail": "Permission denied"
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        # Filter users based on role hierarchy
+        if request.user.role == 'root_admin':
+            users = User.objects.all()
+        else:  # manager
+            users = User.objects.exclude(role='root_admin')
+
+        # Apply filters from query params
+        role = request.query_params.get('role', None)
+        status_param = request.query_params.get('status', None)
+        search = request.query_params.get('search', None)
+
+        if role:
+            users = users.filter(role=role)
+        if status_param == 'active':
+            users = users.filter(is_active=True)
+        elif status_param == 'inactive':
+            users = users.filter(is_active=False)
+        if search:
+            users = users.filter(
+                name__icontains=search
+            ) | users.filter(
+                mobile__icontains=search
+            ) | users.filter(
+                email__icontains=search
+            )
+
+        serializer = UserManagementSerializer(users, many=True)
+        return Response({
+            "users": serializer.data,
+            "count": len(serializer.data)
+        })
+
+class UserCreateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        if request.user.role not in ['root_admin', 'manager']:
+            return Response({
+                "detail": "Permission denied"
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        # Managers can only create users with role 'user'
+        if request.user.role == 'manager' and request.data.get('role') != 'user':
+            return Response({
+                "detail": "Managers can only create users with 'user' role"
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = CreateUserSerializer(data=request.data)
+        if serializer.is_valid():
+            user = serializer.save()
+            return Response({
+                "message": "User created successfully",
+                "user": UserManagementSerializer(user).data
+            }, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class UserDetailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        if request.user.role not in ['root_admin', 'manager']:
+            return Response({
+                "detail": "Permission denied"
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        user = get_object_or_404(User, pk=pk)
+        
+        # Check if user can access this user
+        if request.user.role == 'manager' and user.role == 'root_admin':
+            return Response({
+                "detail": "Permission denied"
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = UserManagementSerializer(user)
+        return Response(serializer.data)
+
+class UserUpdateView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def put(self, request, pk):
+        if request.user.role not in ['root_admin', 'manager']:
+            return Response({
+                "detail": "Permission denied"
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        user = get_object_or_404(User, pk=pk)
+        
+        # Check if user can modify this user
+        if request.user.role == 'manager':
+            if user.role in ['root_admin', 'manager']:
+                return Response({
+                    "detail": "Permission denied"
+                }, status=status.HTTP_403_FORBIDDEN)
+
+        # Managers can only update name, email, and active status for users
+        if request.user.role == 'manager':
+            allowed_fields = {'name', 'email', 'is_active'}
+            for key in request.data.keys():
+                if key not in allowed_fields:
+                    return Response({
+                        "detail": f"Manager cannot update field: {key}"
+                    }, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = UserManagementSerializer(user, data=request.data, partial=True)
+        if serializer.is_valid():
+            serializer.save()
+            return Response({
+                "message": "User updated successfully",
+                "user": serializer.data
+            })
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+class UserDeleteView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, pk):
+        if request.user.role != 'root_admin':
+            return Response({
+                "detail": "Permission denied - only root admin can delete users"
+            }, status=status.HTTP_403_FORBIDDEN)
+
+        user = get_object_or_404(User, pk=pk)
+        
+        # Root admin cannot delete themselves
+        if user.id == request.user.id:
+            return Response({
+                "detail": "Cannot delete yourself"
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+        user.delete()
+        return Response({
+            "message": "User deleted successfully"
+        }, status=status.HTTP_204_NO_CONTENT)

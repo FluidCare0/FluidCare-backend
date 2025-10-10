@@ -22,9 +22,13 @@ class UserManager(BaseUserManager):
 
 class User(AbstractBaseUser, PermissionsMixin):
     ROLE_CHOICES = [
-        ('root_admin','Root Admin'),
-        ('manager','Manager'),
-        ('user','User'),
+        ('root_admin', 'Root Admin'),
+        ('doctor', 'Doctor'),
+        ('nurse', 'Nurse'),
+        ('lab_technician', 'Lab Technician'),
+        ('receptionist', 'Receptionist'),
+        ('manager', 'Manager'),
+        ('user', 'User'), 
     ]
 
     mobile            = models.CharField(max_length=15, unique=True)

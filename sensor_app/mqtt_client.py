@@ -66,7 +66,8 @@ class MQTTClient:
                     mqtt_logger.debug(f"⏳ Waiting for batch ({queue_len}/{BATCH_SIZE})")
             
             elif 'be_project/request_uuid_' in topic:
-                pass
+                mqtt_logger.warning(f'TOPIC: {topic}')
+            
         
         except json.JSONDecodeError as je:
             mqtt_logger.error(f"❌ Invalid JSON in MQTT message: {msg.payload}, Error: {je}")
