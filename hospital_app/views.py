@@ -1,11 +1,14 @@
+from django.shortcuts import get_object_or_404
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
+from django.utils import timezone
+from django.db.models import Q
 from hospital_app.models import Patient
 from survey_app.models import PatientBedAssignmentHistory, DeviceBedAssignmentHistory
 from .models import Floor, Ward, Bed
 from .serializers import (
-    FloorSerializer, WardSerializer, BedSerializer,
+    FloorSerializer, PatientListWithLocationSerializer, WardSerializer, BedSerializer,
     FloorCreateSerializer, WardCreateSerializer, BedCreateSerializer,
     PatientSerializer, PatientDetailSerializer, PatientWithHistorySerializer,
     CreatePatientSerializer, DischargePatientSerializer,
@@ -81,44 +84,118 @@ def update_bed_status(request, bed_id):
         return Response(BedSerializer(bed).data)
     except Bed.DoesNotExist:
         return Response({'error': 'Bed not found'}, status=status.HTTP_404_NOT_FOUND)
-    
+
+@api_view(['POST'])
+def assign_patient_to_bed(request, patient_id):
+    """
+    Assigns a patient to a new bed.
+    This ends the current active assignment (if any) and creates a new one.
+    """
+    try:
+        patient = Patient.objects.get(id=patient_id)
+    except Patient.DoesNotExist:
+        return Response({'error': 'Patient not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    # Get the user making the request (assuming authentication is handled)
+    # You need to ensure the user is authenticated and has permissions
+    # For now, we'll get the user from the request
+    user = request.user
+    if not user.is_authenticated:
+        return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+
+    # Get the bed ID from the request data
+    bed_id = request.data.get('bed_id')
+    if not bed_id:
+        return Response({'error': 'Bed ID is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        bed = Bed.objects.get(id=bed_id)
+    except Bed.DoesNotExist:
+        return Response({'error': 'Bed not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    # Check if the bed is occupied
+    if bed.is_occupied:
+        return Response({'error': 'Bed is already occupied'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Find the currently active assignment for the patient (if any)
+    active_assignment = PatientBedAssignmentHistory.objects.filter(
+        patient=patient,
+        end_time__isnull=True
+    ).first()
+
+    # If there is an active assignment, end it
+    if active_assignment:
+        active_assignment.end_time = timezone.now() # Use timezone.now() from django.utils import timezone
+        active_assignment.save()
+        # Optional: Mark the old bed as unoccupied if needed by other logic (though assignment history tracks it)
+        # active_assignment.bed.is_occupied = False
+        # active_assignment.bed.save()
+
+    # Create a new assignment
+    new_assignment = PatientBedAssignmentHistory.objects.create(
+        patient=patient,
+        user=user, # The user performing the assignment
+        bed=bed
+    )
+    # Mark the new bed as occupied
+    bed.is_occupied = True
+    bed.save()
+
+    # Optionally, return the updated patient detail
+    updated_patient = Patient.objects.select_related().prefetch_related(
+        'patient_bed_assignments__bed__ward__floor',
+        'patient_bed_assignments__patient',
+        'patient_bed_assignments__user',
+    ).get(id=patient_id)
+    serializer = PatientWithHistorySerializer(updated_patient)
+    return Response(serializer.data, status=status.HTTP_200_OK)
 
 @api_view(['GET'])
 def get_all_patients(request):
-    """Get all patients with optional filters"""
-    patients = Patient.objects.all()
+    """Get all patients with optional filters and current location."""
+    # Prefetch related bed assignment data to calculate current location
+    patients = Patient.objects.all().prefetch_related(
+        'patient_bed_assignments__bed__ward__floor'
+    )
     
     # Apply filters
     search = request.GET.get('search', '')
     if search:
         patients = patients.filter(
-            Q(name__icontains=search) | 
+            Q(name__icontains=search) |
             Q(contact__icontains=search)
         )
-    
+
     status_filter = request.GET.get('status', '')
     if status_filter == 'active':
         patients = patients.filter(discharged_at__isnull=True)
     elif status_filter == 'discharged':
         patients = patients.filter(discharged_at__isnull=False)
-    
+
     gender_filter = request.GET.get('gender', '')
     if gender_filter:
         patients = patients.filter(gender=gender_filter)
-    
-    serializer = PatientSerializer(patients, many=True)
+
+    # Use the new serializer that includes location
+    serializer = PatientListWithLocationSerializer(patients, many=True)
     return Response(serializer.data)
 
 @api_view(['GET'])
 def get_patient_detail(request, patient_id):
-    """Get patient with assignment history"""
     try:
-        patient = Patient.objects.get(id=patient_id)
+        # Prefetch only the patient bed assignments and their related floor/ward/bed structure
+        patient = Patient.objects.select_related().prefetch_related(
+            'patient_bed_assignments__bed__ward__floor',
+            'patient_bed_assignments__patient',
+            'patient_bed_assignments__user',
+            # Removed device assignment prefetch as it's handled by the serializer method
+        ).get(id=patient_id)
+
         serializer = PatientWithHistorySerializer(patient)
         return Response(serializer.data)
     except Patient.DoesNotExist:
         return Response({'error': 'Patient not found'}, status=status.HTTP_404_NOT_FOUND)
-
+        
 @api_view(['POST'])
 def create_patient(request):
     """Create a new patient"""
@@ -183,7 +260,53 @@ def get_device_bed_history(request, patient_id):
 
 @api_view(['GET'])
 def get_all_patients_with_history(request):
-    """Get all patients with their assignment history"""
-    patients = Patient.objects.all()
+    patients = Patient.objects.select_related().prefetch_related(
+        'patient_bed_assignments__bed__ward__floor',
+        'patient_bed_assignments__patient',
+        'patient_bed_assignments__user',
+        # Removed device assignment prefetch as it's handled by the serializer method
+    ).all()
     serializer = PatientWithHistorySerializer(patients, many=True)
+    return Response(serializer.data)
+
+@api_view(['GET'])
+def get_patient_related_device_history(request, patient_id):
+    """
+    Get device bed assignment history for all beds a specific patient has been assigned to.
+    This view provides the data specifically for the "Device Assignment History (Related to Patient's Beds)" section.
+    """
+    # Validate patient exists
+    patient = get_object_or_404(Patient, id=patient_id)
+
+    # Get all beds where this patient was assigned (including past assignments)
+    patient_bed_ids = PatientBedAssignmentHistory.objects.filter(
+        patient_id=patient_id
+    ).values_list('bed_id', flat=True).distinct()
+
+    # Get all device assignments for those specific beds
+    device_assignments = DeviceBedAssignmentHistory.objects.filter(
+        bed_id__in=patient_bed_ids
+    ).select_related('device', 'user', 'bed').order_by('-start_time') # Order by start_time descending
+
+    # Serialize the data
+    serializer = DeviceBedAssignmentHistorySerializer(device_assignments, many=True, context={'request': request})
+    return Response(serializer.data)
+
+@api_view(['GET'])
+def get_device_bed_history_by_device_id(request, device_id):
+    """
+    Get device bed assignment history for a specific device.
+    """
+    from sensor_app.models import Device
+    try:
+        device = Device.objects.get(id=device_id)
+    except Device.DoesNotExist:
+        return Response({'error': 'Device not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    device_assignments = DeviceBedAssignmentHistory.objects.filter(
+        device_id=device_id # Assuming 'device_id' is the foreign key field in DeviceBedAssignmentHistory
+    ).select_related('device', 'user', 'bed').order_by('-start_time') # Order by start_time descending
+
+    # Serialize the data
+    serializer = DeviceBedAssignmentHistorySerializer(device_assignments, many=True, context={'request': request})
     return Response(serializer.data)

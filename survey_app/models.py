@@ -41,14 +41,13 @@ class DeviceBedAssignmentHistory(models.Model):
 
 
 class PatientBedAssignmentHistory(models.Model):
-    patient = models.ForeignKey(Patient, on_delete=models.CASCADE)
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='patient_bed_assignments')
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     bed = models.ForeignKey(Bed, on_delete=models.CASCADE)
     start_time = models.DateTimeField(auto_now_add=True)
     end_time = models.DateTimeField(blank=True, null=True)
 
     def clean(self):
-        # ✅ Check if this patient already has an active bed assignment
         active_assignment = PatientBedAssignmentHistory.objects.filter(
             patient=self.patient,
             end_time__isnull=True

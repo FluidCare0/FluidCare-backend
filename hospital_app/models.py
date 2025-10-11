@@ -20,6 +20,25 @@ class Patient(models.Model):
     admitted_at = models.DateTimeField(null=True)
     discharged_at = models.DateTimeField(blank=True, null=True)
 
+    def get_current_bed_assignment(self):
+        """Return the currently active bed assignment"""
+        return self.patient_bed_assignments.filter(end_time__isnull=True).first() # type: ignore
+
+    @property
+    def current_floor(self):
+        assignment = self.get_current_bed_assignment()
+        return assignment.bed.ward.floor.floor_number if assignment else None
+
+    @property
+    def current_ward(self):
+        assignment = self.get_current_bed_assignment()
+        return assignment.bed.ward.ward_number if assignment else None
+
+    @property
+    def current_bed(self):
+        assignment = self.get_current_bed_assignment()
+        return assignment.bed.bed_number if assignment else None
+    
     def __str__(self):
         return f'{self.name}- {self.id}'
 
