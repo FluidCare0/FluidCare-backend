@@ -27,4 +27,10 @@ app.conf.beat_schedule = {
         'task': 'sensor_app.tasks.process_sensor_batch',
         'schedule': 3.0,  # every 3 seconds
     },
+
+    'check-device-connectivity': {
+        'task': 'sensor_app.tasks.check_device_connectivity', # Update path if needed
+        'schedule': crontab(minute=0), # Run every hour for developement
+        # 'schedule': crontab(minute='*/1'), # Run every minute for production
+    },
 }

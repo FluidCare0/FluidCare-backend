@@ -329,6 +329,7 @@ MQTT_USERNAME = ""    # leave empty for public broker
 MQTT_PASSWORD = "" 
 MQTT_PORT = 1883
 MQTT_TOPIC = 'be_project/#'
+MQTT_TASK_COMPLETE_TOPIC = 'be_project/task_complete/#'
 
 # # --------------------------
 # # Email

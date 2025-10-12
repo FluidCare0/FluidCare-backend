@@ -1,22 +1,99 @@
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from django.db.models import Q
+from django.contrib.auth import get_user_model
+
 from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.decorators import api_view
-from django.utils import timezone
-from django.db.models import Q
-from hospital_app.models import Patient
+
+from hospital_app.models import Patient, Bed
 from survey_app.models import PatientBedAssignmentHistory, DeviceBedAssignmentHistory
-from .models import Floor, Ward, Bed
+from .models import Floor, Ward
 from .serializers import (
-    FloorSerializer, PatientListWithLocationSerializer, WardSerializer, BedSerializer,
-    FloorCreateSerializer, WardCreateSerializer, BedCreateSerializer,
-    PatientSerializer, PatientDetailSerializer, PatientWithHistorySerializer,
-    CreatePatientSerializer, DischargePatientSerializer,
-    PatientBedAssignmentHistorySerializer, DeviceBedAssignmentHistorySerializer
+    FloorSerializer,
+    PatientListWithLocationSerializer,
+    WardSerializer,
+    BedSerializer,
+    FloorCreateSerializer,
+    WardCreateSerializer,
+    BedCreateSerializer,
+    PatientSerializer,
+    PatientDetailSerializer,
+    PatientWithHistorySerializer,
+    CreatePatientSerializer,
+    DischargePatientSerializer,
+    PatientBedAssignmentHistorySerializer,
+    DeviceBedAssignmentHistorySerializer
 )
-from django.contrib.auth import get_user_model
 
 User = get_user_model()
+
+
+@api_view(['GET'])
+def get_patient_detail(request, patient_id):
+    try:
+        # Prefetch only the patient bed assignments and their related floor/ward/bed structure
+        patient = Patient.objects.select_related().prefetch_related(
+            'patient_bed_assignments__bed__ward__floor',
+            'patient_bed_assignments__patient',
+            'patient_bed_assignments__user',
+            # Removed device assignment prefetch as it's handled by the serializer method
+        ).get(id=patient_id)
+
+        serializer = PatientWithHistorySerializer(patient)
+        return Response(serializer.data)
+    except Patient.DoesNotExist:
+        return Response({'error': 'Patient not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+@api_view(['POST'])
+def create_patient(request):
+    """Create a new patient"""
+    serializer = CreatePatientSerializer(data=request.data)
+    if serializer.is_valid():
+        patient = serializer.save()
+        return Response(PatientSerializer(patient).data, status=status.HTTP_201_CREATED)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['PUT'])
+def discharge_patient(request, patient_id):
+    """Discharge a patient"""
+    try:
+        patient = Patient.objects.get(id=patient_id)
+        serializer = DischargePatientSerializer(patient, data=request.data, partial=True)
+        if serializer.is_valid():
+            # Update discharge time
+            serializer.save(discharged_at=request.data.get('discharged_at'))
+            return Response(PatientSerializer(patient).data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    except Patient.DoesNotExist:
+        return Response({'error': 'Patient not found'}, status=status.HTTP_404_NOT_FOUND)
+
+@api_view(['DELETE'])
+def delete_patient(request, patient_id):
+    """Delete a patient"""
+    try:
+        patient = Patient.objects.get(id=patient_id)
+        patient.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+    except Patient.DoesNotExist:
+        return Response({'error': 'Patient not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+@api_view(['PUT']) # or ['PATCH'] if you prefer partial updates
+def update_patient(request, patient_id):
+    """Update an existing patient's details"""
+    try:
+        patient = Patient.objects.get(id=patient_id)
+    except Patient.DoesNotExist:
+        return Response({'error': 'Patient not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    serializer = PatientSerializer(patient, data=request.data, partial=True) # Use partial=True for PATCH
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data)
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 @api_view(['GET'])
 def get_hospital_structure(request):
@@ -85,11 +162,35 @@ def update_bed_status(request, bed_id):
     except Bed.DoesNotExist:
         return Response({'error': 'Bed not found'}, status=status.HTTP_404_NOT_FOUND)
 
+# NEW: Combined view for GET and PUT requests on patient details
+@api_view(['GET', 'PUT']) # Accept both GET and PUT
+def patient_detail_view(request, patient_id):
+    """
+    Get or Update an existing patient's details.
+    """
+    patient = get_object_or_404(Patient, id=patient_id)
+
+    if request.method == 'GET':
+        # Use the detailed serializer for GET
+        serializer = PatientWithHistorySerializer(patient)
+        return Response(serializer.data)
+
+    elif request.method == 'PUT': # or 'PATCH'
+        # Use the PatientSerializer for updates
+        serializer = PatientSerializer(patient, data=request.data, partial=True) # Use partial=True for PATCH
+        if serializer.is_valid():
+            serializer.save()
+            # Return the updated patient data using the detail serializer
+            detail_serializer = PatientWithHistorySerializer(patient)
+            return Response(detail_serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 @api_view(['POST'])
 def assign_patient_to_bed(request, patient_id):
     """
     Assigns a patient to a new bed.
     This ends the current active assignment (if any) and creates a new one.
+    It also updates the `is_occupied` flag on the old and new beds.
     """
     try:
         patient = Patient.objects.get(id=patient_id)
@@ -97,8 +198,6 @@ def assign_patient_to_bed(request, patient_id):
         return Response({'error': 'Patient not found'}, status=status.HTTP_404_NOT_FOUND)
 
     # Get the user making the request (assuming authentication is handled)
-    # You need to ensure the user is authenticated and has permissions
-    # For now, we'll get the user from the request
     user = request.user
     if not user.is_authenticated:
         return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
@@ -109,39 +208,40 @@ def assign_patient_to_bed(request, patient_id):
         return Response({'error': 'Bed ID is required'}, status=status.HTTP_400_BAD_REQUEST)
 
     try:
-        bed = Bed.objects.get(id=bed_id)
+        new_bed = Bed.objects.get(id=bed_id)
     except Bed.DoesNotExist:
         return Response({'error': 'Bed not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    # Check if the bed is occupied
-    if bed.is_occupied:
-        return Response({'error': 'Bed is already occupied'}, status=status.HTTP_400_BAD_REQUEST)
-
-    # Find the currently active assignment for the patient (if any)
+    # Check if the new bed is occupied (unless it's the same as the current one)
+    # Get current assignment to check if it's the same bed
     active_assignment = PatientBedAssignmentHistory.objects.filter(
         patient=patient,
         end_time__isnull=True
     ).first()
 
-    # If there is an active assignment, end it
+    if new_bed.is_occupied and (not active_assignment or active_assignment.bed.id != new_bed.id):
+        return Response({'error': 'Bed is already occupied'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # If there is an active assignment, end it and mark the old bed as unoccupied
     if active_assignment:
-        active_assignment.end_time = timezone.now() # Use timezone.now() from django.utils import timezone
+        active_assignment.end_time = timezone.now()
         active_assignment.save()
-        # Optional: Mark the old bed as unoccupied if needed by other logic (though assignment history tracks it)
-        # active_assignment.bed.is_occupied = False
-        # active_assignment.bed.save()
+        # Mark the old bed as unoccupied
+        old_bed = active_assignment.bed
+        old_bed.is_occupied = False
+        old_bed.save()
 
     # Create a new assignment
     new_assignment = PatientBedAssignmentHistory.objects.create(
         patient=patient,
-        user=user, # The user performing the assignment
-        bed=bed
+        user=user,
+        bed=new_bed
     )
     # Mark the new bed as occupied
-    bed.is_occupied = True
-    bed.save()
+    new_bed.is_occupied = True
+    new_bed.save()
 
-    # Optionally, return the updated patient detail
+    # Fetch the updated patient details to return
     updated_patient = Patient.objects.select_related().prefetch_related(
         'patient_bed_assignments__bed__ward__floor',
         'patient_bed_assignments__patient',
@@ -180,54 +280,7 @@ def get_all_patients(request):
     serializer = PatientListWithLocationSerializer(patients, many=True)
     return Response(serializer.data)
 
-@api_view(['GET'])
-def get_patient_detail(request, patient_id):
-    try:
-        # Prefetch only the patient bed assignments and their related floor/ward/bed structure
-        patient = Patient.objects.select_related().prefetch_related(
-            'patient_bed_assignments__bed__ward__floor',
-            'patient_bed_assignments__patient',
-            'patient_bed_assignments__user',
-            # Removed device assignment prefetch as it's handled by the serializer method
-        ).get(id=patient_id)
-
-        serializer = PatientWithHistorySerializer(patient)
-        return Response(serializer.data)
-    except Patient.DoesNotExist:
-        return Response({'error': 'Patient not found'}, status=status.HTTP_404_NOT_FOUND)
-        
-@api_view(['POST'])
-def create_patient(request):
-    """Create a new patient"""
-    serializer = CreatePatientSerializer(data=request.data)
-    if serializer.is_valid():
-        patient = serializer.save()
-        return Response(PatientSerializer(patient).data, status=status.HTTP_201_CREATED)
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-@api_view(['PUT'])
-def discharge_patient(request, patient_id):
-    """Discharge a patient"""
-    try:
-        patient = Patient.objects.get(id=patient_id)
-        serializer = DischargePatientSerializer(patient, data=request.data, partial=True)
-        if serializer.is_valid():
-            # Update discharge time
-            serializer.save(discharged_at=request.data.get('discharged_at'))
-            return Response(PatientSerializer(patient).data)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    except Patient.DoesNotExist:
-        return Response({'error': 'Patient not found'}, status=status.HTTP_404_NOT_FOUND)
-
-@api_view(['DELETE'])
-def delete_patient(request, patient_id):
-    """Delete a patient"""
-    try:
-        patient = Patient.objects.get(id=patient_id)
-        patient.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
-    except Patient.DoesNotExist:
-        return Response({'error': 'Patient not found'}, status=status.HTTP_404_NOT_FOUND)
+# ... keep other views like create_patient, discharge_patient, etc. ... (unchanged)
 
 @api_view(['GET'])
 def get_patient_bed_history(request, patient_id):

@@ -1,95 +1,99 @@
 # sensor_app/consumers.py
 import json
+import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
-from channels.auth import login
-from django.contrib.auth.models import AnonymousUser
+from django.conf import settings
+import redis
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
+
+logger = logging.getLogger(__name__)
 
 class SensorConsumer(AsyncWebsocketConsumer):
+    DEVICE_STATUS_CACHE_KEY = "device_status:{}"
+
     async def connect(self):
-        # Optional: Add authentication logic here if needed beyond the ASGI middleware
-        # if isinstance(self.scope["user"], AnonymousUser):
-        #     await self.close()
-        # else:
         self.room_group_name = 'sensor_monitoring'
-
-        # Join general monitoring group
-        await self.channel_layer.group_add(
-            self.room_group_name,
-            self.channel_name
-        )
-
+        await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
-
-        # Send connection confirmation
-        await self.send(text_data=json.dumps({
-            'type': 'connection_established',
-            'message': 'Connected to sensor monitoring'
-        }))
+        await self.send(text_data=json.dumps({'type': 'connection_established', 'message': 'Connected'}))
+        logger.info(f"WebSocket connected to {self.room_group_name}")
 
     async def disconnect(self, close_code):
-        # Leave general monitoring group
-        await self.channel_layer.group_discard(
-            self.room_group_name,
-            self.channel_name
-        )
+        await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+        logger.info(f"WebSocket disconnected from {self.room_group_name}")
 
     async def receive(self, text_data):
-        """Handle messages from WebSocket"""
         try:
-            text_data_json = json.loads(text_data)
-            message_type = text_data_json.get('type')
-
-            # Subscribe to specific floor (optional feature)
-            if message_type == 'subscribe_floor':
-                floor_number = text_data_json.get('floor')
-                if floor_number:
-                    await self.channel_layer.group_add(
-                        f'floor_{floor_number}',
-                        self.channel_name
-                    )
-                    await self.send(text_data=json.dumps({
-                        'type': 'subscription_confirmed',
-                        'floor': floor_number
-                    }))
-
-            # Unsubscribe from specific floor (optional feature)
-            elif message_type == 'unsubscribe_floor':
-                floor_number = text_data_json.get('floor')
-                if floor_number:
-                    await self.channel_layer.group_discard(
-                        f'floor_{floor_number}',
-                        self.channel_name
-                    )
-
+            data = json.loads(text_data)
+            message_type = data.get('type')
         except json.JSONDecodeError:
-            pass
+            logger.error(f"Invalid JSON: {text_data}")
 
     async def sensor_message(self, event):
-        """Receive message from group and send to WebSocket"""
-        message = event['message']
+        """Receive the final prepared message from the channel layer and send to WebSocket."""
+        # The message here is the one prepared by the consumer itself after fetching status
+        message_to_send = event['message'] # e.g., {'type': 'sensor_data', 'message': {..., 'status': '...'}}
 
-        # Send message to WebSocket
-        await self.send(text_data=json.dumps(message))
+        # Send the message directly
+        await self.send(text_data=json.dumps(message_to_send))
+        logger.debug(f"Sent to WebSocket: {message_to_send}")
 
-    # --- New method to handle messages from Celery ---
-    async def handle_sensor_data(self, sensor_data):
+    # --- NEW method to handle raw sensor data from Celery task via channel layer ---
+    async def handle_sensor_data_from_task(self, event):
         """
-        This method is called from your Celery task or wherever you process the MQTT message.
-        It sends the sensor data to the 'sensor_monitoring' group.
+        Receive raw sensor data from the Celery task via channel layer group.
+        Fetch the status from Redis cache and broadcast the complete message.
         """
-        # Example: Prepare the message structure expected by the frontend
-        # The sensor_data is the payload from MQTT (e.g., {'node_id': ..., 'reading': ...})
-        message_to_send = {
-            'type': 'sensor_data', # Identify the message type
-            'message': sensor_data # The actual sensor data payload
+        # The 'event' contains the data sent by the Celery task via channel_layer.group_send
+        # The Celery task sends: {'type': 'handle_sensor_data_from_task', 'sensor_data': {...}}
+        raw_sensor_data = event.get('sensor_data')
+        if not raw_sensor_data:
+            logger.error(f"No 'sensor_data' found in event: {event}")
+            return
+
+        logger.info(f"Received raw sensor data from task for WebSocket processing: {raw_sensor_data}")
+
+        # Get the device identifier from the raw data (nodeId or nodeMac)
+        device_identifier = raw_sensor_data.get('nodeId') or raw_sensor_data.get('nodeMac')
+        if not device_identifier:
+            logger.error(f"No device identifier (nodeId or nodeMac) in raw sensor data: {raw_sensor_data}")
+            return
+
+        # --- Fetch Status from Redis Cache ---
+        redis_client = redis.from_url(settings.REDIS_URL)
+        try:
+            # Adjust the cache key format according to your implementation
+            cache_key = f"device_status:{device_identifier}"
+            cached_status_bytes = redis_client.get(cache_key)
+            # Default to 'Offline' if not found in cache, assuming it's not actively reporting
+            cached_status = cached_status_bytes.decode('utf-8') if cached_status_bytes else 'Offline'
+            logger.debug(f"Fetched cached status for {device_identifier}: {cached_status}")
+        except redis.RedisError as e:
+            logger.error(f"Error fetching status from Redis for {device_identifier}: {e}")
+            cached_status = 'Offline' # Fallback status if cache fails
+        finally:
+            redis_client.close() # Ensure connection is closed
+
+        # --- Prepare Final Message for Frontend ---
+        # Include the fetched status in the message
+        final_message_for_websocket = {
+            'type': 'sensor_data',
+            'message': {
+                **raw_sensor_data, # Include all data from the Celery task (level, battery, etc.)
+                'status': cached_status # Add the status fetched from cache
+            }
         }
 
-        # Send the message to the group
+        logger.debug(f"Prepared final message for WebSocket (with status): {final_message_for_websocket}")
+
+        # --- Broadcast Final Message via Channel Layer to WebSocket ---
+        # This calls the 'sensor_message' handler which sends to the WebSocket
         await self.channel_layer.group_send(
-            self.room_group_name,
+            self.room_group_name, # Group name where connected WebSockets are listening
             {
-                'type': 'sensor_message', # Route to the sensor_message handler
-                'message': message_to_send
+                'type': 'sensor_message', # Route to the sensor_message handler which sends to WS
+                'message': final_message_for_websocket
             }
         )
-    # --- End of new method ---
+        logger.info(f"Broadcasted final sensor data with status via channel layer for device {device_identifier}")

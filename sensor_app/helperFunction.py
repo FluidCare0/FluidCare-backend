@@ -25,36 +25,3 @@ def get_fluid_bag(device):
     return fluid_bag
 
 
-def send_sensor_data_to_websocket(sensor_payload):
-    """
-    Sends sensor data to the 'sensor_monitoring' WebSocket group.
-
-    Args:
-        sensor_payload (dict): The sensor data payload (e.g., from MQTT).
-                               Example: {'node_id': '...', 'reading': 21.93, ...}
-    """
-    try:
-        # Get the default channel layer configured in your Django settings
-        channel_layer = get_channel_layer()
-
-        if channel_layer:
-            # Prepare the message structure for the WebSocket
-            message_to_send = {
-                'type': 'sensor_data',  # Identify the message type for the frontend
-                'message': sensor_payload  # The actual sensor data
-            }
-
-            # Use async_to_sync to call the async channel_layer.group_send from sync code (like Celery task)
-            async_to_sync(channel_layer.group_send)(
-                "sensor_monitoring",  # The group name defined in SensorConsumer
-                {
-                    "type": "sensor_message",  # The consumer method to handle the message
-                    "message": message_to_send
-                }
-            )
-            mqtt_logger.info(f"WebSocket message sent for node {sensor_payload.get('node_id')}: {sensor_payload}")
-        else:
-            mqtt_logger.warning("Channel layer is not available. Cannot send WebSocket message.")
-
-    except Exception as e:
-        mqtt_logger.error(f"Error sending sensor data to WebSocket: {e}", exc_info=True)

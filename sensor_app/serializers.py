@@ -1,6 +1,6 @@
 # sensor_app/serializers.py
 from rest_framework import serializers
-from .models import Device, FluidBag
+from .models import Device, FluidBag, SensorReading
 from hospital_app.models import Patient, Bed, Ward # Import related models
 from django.contrib.auth import get_user_model
 
@@ -76,3 +76,9 @@ class DeviceWithCurrentAssignmentSerializer(serializers.ModelSerializer):
         if assignment and assignment.bed and assignment.bed.ward:
             return assignment.bed.ward.name
         return None
+
+class SensorReadingSerializer(serializers.ModelSerializer):
+    level = serializers.IntegerField(source='reading')
+    class Meta:
+        model = SensorReading
+        fields = ['level', 'timestamp', 'battery_percent']

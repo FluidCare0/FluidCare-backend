@@ -1,3 +1,4 @@
+# hospital_app/urls.py
 from django.urls import path
 from . import views
 
@@ -13,9 +14,9 @@ urlpatterns = [
 
     path('patients/', views.get_all_patients, name='get_all_patients'),
     path('patients/create/', views.create_patient, name='create_patient'),
-    path('patients/<uuid:patient_id>/', views.get_patient_detail, name='get_patient_detail'),
-    path('patients/<uuid:patient_id>/discharge/', views.discharge_patient, name='discharge_patient'),
+    path('patients/<uuid:patient_id>/', views.patient_detail_view, name='patient_detail_view'),
     path('patients/<uuid:patient_id>/assign-bed/', views.assign_patient_to_bed, name='assign_patient_to_bed'),
+    path('patients/<uuid:patient_id>/discharge/', views.discharge_patient, name='discharge_patient'),
     path('patients/<uuid:patient_id>/delete/', views.delete_patient, name='delete_patient'),
     path('patients/<uuid:patient_id>/bed-history/', views.get_patient_bed_history, name='get_patient_bed_history'),
     path('patients/<uuid:patient_id>/device-history/', views.get_device_bed_history, name='get_device_bed_history'),
@@ -24,6 +25,6 @@ urlpatterns = [
 
     path('devices/<int:device_id>/bed-history/', views.get_device_bed_history_by_device_id, name='get_device_bed_history_by_device_id'),
 
-    path('structure/', views.get_hospital_structure, name='get_hospital_structure'),    
-
+    path('structure/', views.get_hospital_structure, name='get_hospital_structure'),
 ]
+

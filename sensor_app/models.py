@@ -13,6 +13,8 @@ class Device(models.Model):
     status = models.BooleanField(default=False)  # Active / Inactive
     installed_at = models.DateTimeField(auto_now_add=True)
     last_seen = models.DateTimeField(null=True, blank=True)
+    stop_at = models.DateTimeField(null=True, blank=True)
+    removed_from_dashboard = models.BooleanField(default=False)
 
     def __str__(self):
         return f'{self.type.capitalize()} - {self.mac_address}'
