@@ -1,5 +1,22 @@
 from django.contrib import admin
 from .models import Patient, Floor, Ward, Bed
+from sensor_app.models import DevicePatientAssignment
+
+
+# ------------------------
+# Inline for Device Assignments
+# ------------------------
+class DeviceAssignmentInline(admin.TabularInline):
+    """
+    Shows all active/inactive device assignments for a patient directly in Patient admin.
+    """
+    model = DevicePatientAssignment
+    extra = 0
+    fields = ('device', 'user', 'start_time', 'end_time', 'notes')
+    readonly_fields = ('start_time',)
+    autocomplete_fields = ('device', 'user')
+    ordering = ('-start_time',)
+
 
 # ------------------------
 # Patient Admin
@@ -10,6 +27,7 @@ class PatientAdmin(admin.ModelAdmin):
     search_fields = ('name', 'contact')
     list_filter = ('gender',)
     readonly_fields = ('id',)
+    inlines = [DeviceAssignmentInline]  # 👈 add the inline here
 
 
 # ------------------------
@@ -39,5 +57,4 @@ class BedAdmin(admin.ModelAdmin):
     list_display = ('id', 'bed_number', 'ward', 'is_occupied')
     list_filter = ('ward', 'is_occupied')
     search_fields = ('bed_number',)
-
 

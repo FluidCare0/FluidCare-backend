@@ -1,6 +1,7 @@
 # sensor_app/mqtt_client.py
 import json 
 import logging
+import os
 import paho.mqtt.client as mqtt
 from django.conf import settings
 from django.utils import timezone
@@ -10,6 +11,8 @@ from channels.layers import get_channel_layer
 import redis
 from sensor_app.models import Device, FluidBag, SensorReading
 from sensor_app.tasks import trigger_batch_task, process_sensor_data, process_task_completion, process_disconnect
+from sensor_app.utils import handle_node_id_request
+import ssl
 # Update imports to use the new tasks
 
 r = redis.Redis.from_url(settings.REDIS_URL)
@@ -32,12 +35,18 @@ class MQTTClient:
         if settings.MQTT_USERNAME and settings.MQTT_PASSWORD:
             self.client.username_pw_set(settings.MQTT_USERNAME, settings.MQTT_PASSWORD)
 
+        ca_cert_path = os.path.join(settings.BASE_DIR, "sensor_app", "certs", "isrgrootx1.pem")
+        self.client.tls_set(
+            ca_certs=ca_cert_path,
+            cert_reqs=ssl.CERT_REQUIRED,
+            tls_version=ssl.PROTOCOL_TLS_CLIENT
+        )
+        self.client.tls_insecure_set(False)
+
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             mqtt_logger.info('Mqtt broker connected')
             client.subscribe(settings.MQTT_TOPIC, qos=1)
-            # Subscribe to the task completion topic
-            # Adjust the topic pattern as needed
             task_complete_topic = settings.MQTT_TASK_COMPLETE_TOPIC # Define this in your Django settings
             if task_complete_topic:
                 client.subscribe(task_complete_topic, qos=1)
@@ -55,14 +64,10 @@ class MQTTClient:
             payload = json.loads(msg.payload.decode())
             mqtt_logger.info(f"📨 Received message on topic '{topic}': {payload}")
 
-            if 'be_project/node_' in topic and 'be_project/task_complete' not in topic and 'be_project/disconnect' not in topic: # Regular data topic (adjust pattern as needed)
-                # --- CALL THE TASK FOR REGULAR DATA ---
-                # This task handles status update, DB save, and WebSocket send for regular data
+            if 'be_project/node/data' in topic and 'be_project/task_complete' not in topic and 'be_project/disconnect' not in topic: # Regular data topic (adjust pattern as needed)
                 result = process_sensor_data.delay(payload) # type: ignore
                 mqtt_logger.info(f"✅ Sensor processing task queued with ID: {result.id} for topic {topic}")
-                # --- END CALL ---
 
-                # --- QUEUE FOR BATCH PROCESSING (if you still need it for historical data) ---
                 r.lpush(QUEUE_KEY, json.dumps(payload))
                 queue_len = r.llen(QUEUE_KEY)
                 mqtt_logger.info(f"📊 Queue length for batch: {queue_len}")
@@ -74,21 +79,18 @@ class MQTTClient:
                     mqtt_logger.debug(f"⏳ Waiting for batch ({queue_len}/{BATCH_SIZE})")
 
             elif 'be_project/task_complete' in topic: # Task completion topic (adjust pattern as needed)
-                # --- CALL THE TASK FOR TASK COMPLETION ---
-                # This task handles setting stop_at and status for task completion
                 result = process_task_completion.delay(payload) # type: ignore
                 mqtt_logger.info(f"✅ Task completion processing task queued with ID: {result.id} for topic {topic}")
-                # --- END CALL ---
 
             elif 'be_project/disconnect' in topic: # Disconnect topic (adjust pattern as needed)
-                # --- CALL THE TASK FOR DISCONNECT ---
-                # This task handles setting status to False and stop_at
                 result = process_disconnect.delay(payload) # type: ignore
                 mqtt_logger.info(f"✅ Disconnect processing task queued with ID: {result.id} for topic {topic}")
-                # --- END CALL ---
 
-            elif 'be_project/request_uuid_' in topic:
-                mqtt_logger.warning(f'TOPIC: {topic}')
+            elif 'be_project/node/request/id' in topic:
+                topic = msg.topic
+                payload = json.loads(msg.payload.decode())
+                handle_node_id_request(self, topic, payload)
+
             
         
         except json.JSONDecodeError as je:
@@ -96,15 +98,14 @@ class MQTTClient:
 
         except Exception as e:
             mqtt_logger.error(f'❌ Error in on_message: {e}', exc_info=True)
-            
-        
+                 
     def connect(self):
         try:
             self.client.connect(settings.MQTT_BROKER, settings.MQTT_PORT, 60)
             self.client.loop_start()
-            mqtt_logger.info('MQTT Client Started')
+            mqtt_logger.info('✅ Secure MQTT Client Started with TLS')
         except Exception as e:
-            mqtt_logger.error(f'Failed to connect to mqtt broker: {e}')
+            mqtt_logger.error(f'Failed to connect to MQTT broker: {e}')
 
     def disconnect(self):
         self.client.loop_stop()
@@ -119,3 +120,20 @@ def get_mqtt_client():
         mqtt_client = MQTTClient()
         mqtt_client.connect()
     return mqtt_client
+
+def publish_message(topic: str, payload: dict, qos: int = 1, retain: bool = False):
+    try:
+        client = get_mqtt_client()
+        json_payload = json.dumps(payload)
+
+        mqtt_logger.info(f"📤 JSON being published to '{topic}': {json_payload}")
+
+        result = client.client.publish(topic, json_payload, qos=qos, retain=retain)
+
+        if result.rc == 0:
+            mqtt_logger.info(f"✅ Published message to '{topic}' successfully.")
+        else:
+            mqtt_logger.error(f"❌ Failed to publish message to '{topic}', result code: {result.rc}")
+
+    except Exception as e:
+        mqtt_logger.error(f"❌ Error while publishing to MQTT: {e}", exc_info=True)

@@ -31,7 +31,6 @@ class SensorConsumer(AsyncWebsocketConsumer):
             logger.error(f"Invalid JSON: {text_data}")
 
     async def sensor_message(self, event):
-        """Receive the final prepared message from the channel layer and send to WebSocket."""
         # The message here is the one prepared by the consumer itself after fetching status
         message_to_send = event['message'] # e.g., {'type': 'sensor_data', 'message': {..., 'status': '...'}}
 
@@ -39,7 +38,24 @@ class SensorConsumer(AsyncWebsocketConsumer):
         await self.send(text_data=json.dumps(message_to_send))
         logger.debug(f"Sent to WebSocket: {message_to_send}")
 
-    # --- NEW method to handle raw sensor data from Celery task via channel layer ---
+
+    async def node_id_request(self, event):
+        """Handle Node ID request event and send MAC address to WebSocket clients."""
+        mac_address = event.get("mac")
+
+        if not mac_address:
+            logger.warning(f"No MAC found in node_id_request event: {event}")
+            return
+
+        message = {
+            "type": "node_id_request",
+            "mac": mac_address,
+        }
+
+        # Send directly to frontend WebSocket
+        await self.send(text_data=json.dumps(message))
+        logger.info(f"📤 Sent Node ID request MAC to WebSocket: {mac_address}")
+
     async def handle_sensor_data_from_task(self, event):
         """
         Receive raw sensor data from the Celery task via channel layer group.

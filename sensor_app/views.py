@@ -1,4 +1,5 @@
 # sensor_app/views.py - OPTIMIZED VERSION
+import json
 import logging
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
@@ -10,8 +11,9 @@ from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from datetime import timedelta
 from django.db.models import Prefetch
-from sensor_app.models import Device, FluidBag, SensorReading
+from sensor_app.models import Device, DevicePatientAssignment, FluidBag, SensorReading
 from django.shortcuts import get_object_or_404, render
+from sensor_app.mqtt_client import publish_message
 from sensor_app.serializers import DeviceWithCurrentAssignmentSerializer, FluidBagSerializer, SensorReadingSerializer
 from hospital_app.models import Patient, Bed, Ward
 from survey_app.models import DeviceBedAssignmentHistory, PatientBedAssignmentHistory
@@ -271,3 +273,54 @@ def get_sensor_history(request, device_id):
         return Response(SensorReadingSerializer(readings, many=True).data)
     except Device.DoesNotExist:
         return Response({'error': 'Device not found'}, status=404)
+    
+
+@api_view(['POST'])
+def register_node(request):
+    # return Response({"message": "FUCK TEAM PROJECT",}, status=200)
+    mac = request.data.get('mac')
+    patient_id = request.data.get('patient_id')
+    fluid_type = request.data.get('fluid_type')
+    fluid_capacity = request.data.get('fluid_capacity')
+
+    if not all([mac, patient_id, fluid_type, fluid_capacity]):
+        return Response({"error": "Missing required fields."}, status=400)
+
+    device_in = Device.objects.create(mac_address=mac, type='node')
+
+    fluid_in = FluidBag.objects.create(
+        device=device_in,
+        type=fluid_type,
+        capacity_ml=fluid_capacity
+    )
+
+    patient_in = get_object_or_404(Patient, id=patient_id)
+
+    final = DevicePatientAssignment.objects.create(
+        device=device_in,
+        fluid=fluid_in,
+        patient=patient_in,
+        user=request.user
+    )
+
+    topic = 'be_project/test/in'
+    payload = {
+        "request_code": 202,
+        "mac": final.device.mac_address,
+        "node_id": str(final.device.id)
+    }
+
+    print("\n" + "=" * 50)
+    print("📤 JSON PAYLOAD TO PUBLISH")
+    print("=" * 50)
+    print(json.dumps(payload, indent=2))
+    print("=" * 50 + "\n")
+
+    publish_message(topic, payload)
+
+    return Response({
+        "message": "Device assigned successfully",
+        "node_id": str(final.device.id),
+        "patient": final.patient.name
+    }, status=200)
+

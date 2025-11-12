@@ -31,11 +31,11 @@ class User(AbstractBaseUser, PermissionsMixin):
         ('user', 'User'), 
     ]
 
-    mobile            = models.CharField(max_length=15, unique=True)
+    mobile            = models.CharField(max_length=15, unique=True, db_index=True)
     name              = models.CharField(max_length=100, null=True, blank=True, default='empty')
-    email             = models.EmailField(null=True, blank=True)
+    email             = models.EmailField(null=True, blank=True, db_index=True)
     is_email_verified = models.BooleanField(default=False)
-    role              = models.CharField(max_length=20, choices=ROLE_CHOICES)
+    role              = models.CharField(max_length=20, choices=ROLE_CHOICES, db_index=True)
     is_active         = models.BooleanField(default=True)
     is_staff          = models.BooleanField(default=False)
     created_at        = models.DateTimeField(auto_now_add=True)
@@ -47,4 +47,9 @@ class User(AbstractBaseUser, PermissionsMixin):
     objects = UserManager()
 
     def __str__(self):
-        return f"{self.name}"
+        return f"{self.name} ({self.mobile})"
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['role', 'is_active']),
+        ]

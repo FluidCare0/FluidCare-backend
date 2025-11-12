@@ -8,7 +8,7 @@ from django.contrib.auth import get_user_model
 
 User = get_user_model()
 
-# --- Hospital App Serializers ---
+
 
 class BedSerializer(serializers.ModelSerializer):
     class Meta:
@@ -114,9 +114,7 @@ class PatientWithHistorySerializer(serializers.ModelSerializer):
             return active_assignment.bed.bed_number
         return None
 
-# --- New Serializer for Patient List with Current Location ---
 class PatientListWithLocationSerializer(serializers.ModelSerializer):
-    # Use SerializerMethodFields to get the current location
     floor = serializers.SerializerMethodField()
     ward = serializers.SerializerMethodField()
     bed = serializers.SerializerMethodField()

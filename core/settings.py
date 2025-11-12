@@ -323,11 +323,11 @@ TWILIO_FROM_NUMBER = config('TWILIO_PHONE_NUMBER', default='')
 # --------------------------
 # MQTT Client
 # --------------------------
-MQTT_BROKER = "test.mosquitto.org"
+MQTT_BROKER = "1e578bacd37e4198a99e7a4a28756c6e.s1.eu.hivemq.cloud"
 MQTT_CLIENT_ID = f"django-backend-{uuid.uuid4().hex[:6]}"
-MQTT_USERNAME = ""    # leave empty for public broker
-MQTT_PASSWORD = "" 
-MQTT_PORT = 1883
+MQTT_USERNAME = "kanbs"    # leave empty for public broker
+MQTT_PASSWORD = "Kartik@3165" 
+MQTT_PORT = 8883
 MQTT_TOPIC = 'be_project/#'
 MQTT_TASK_COMPLETE_TOPIC = 'be_project/task_complete/#'
 

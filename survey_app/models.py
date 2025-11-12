@@ -9,9 +9,9 @@ from django.core.exceptions import ValidationError
 User = get_user_model()
 
 class DeviceBedAssignmentHistory(models.Model):
-    device = models.ForeignKey(Device, on_delete=models.CASCADE, related_name='assignments'  )
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    bed = models.ForeignKey(Bed, on_delete=models.CASCADE)
+    device = models.ForeignKey(Device, on_delete=models.CASCADE, related_name='assignments', null=True, blank=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
+    bed = models.ForeignKey(Bed, on_delete=models.CASCADE, null=True, blank=True)
     start_time = models.DateTimeField(auto_now_add=True)
     end_time = models.DateTimeField(blank=True, null=True)
 
@@ -41,9 +41,9 @@ class DeviceBedAssignmentHistory(models.Model):
 
 
 class PatientBedAssignmentHistory(models.Model):
-    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='patient_bed_assignments')
-    user = models.ForeignKey(User, on_delete=models.CASCADE)
-    bed = models.ForeignKey(Bed, on_delete=models.CASCADE)
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='patient_bed_assignments', null=True, blank=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
+    bed = models.ForeignKey(Bed, on_delete=models.CASCADE, null=True, blank=True)
     start_time = models.DateTimeField(auto_now_add=True)
     end_time = models.DateTimeField(blank=True, null=True)
 

@@ -8,6 +8,7 @@ from rest_framework.response import Response
 from rest_framework.decorators import api_view
 
 from hospital_app.models import Patient, Bed
+from sensor_app.mqtt_client import publish_message
 from survey_app.models import PatientBedAssignmentHistory, DeviceBedAssignmentHistory
 from .models import Floor, Ward
 from .serializers import (
@@ -26,6 +27,9 @@ from .serializers import (
     PatientBedAssignmentHistorySerializer,
     DeviceBedAssignmentHistorySerializer
 )
+
+import json
+
 
 User = get_user_model()
 
@@ -79,7 +83,6 @@ def delete_patient(request, patient_id):
     except Patient.DoesNotExist:
         return Response({'error': 'Patient not found'}, status=status.HTTP_404_NOT_FOUND)
 
-
 @api_view(['PUT']) # or ['PATCH'] if you prefer partial updates
 def update_patient(request, patient_id):
     """Update an existing patient's details"""
@@ -93,7 +96,6 @@ def update_patient(request, patient_id):
         serializer.save()
         return Response(serializer.data)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
 
 @api_view(['GET'])
 def get_hospital_structure(request):
@@ -152,18 +154,7 @@ def delete_bed(request, bed_id):
     except Bed.DoesNotExist:
         return Response({'error': 'Bed not found'}, status=status.HTTP_404_NOT_FOUND)
 
-@api_view(['PUT'])
-def update_bed_status(request, bed_id):
-    try:
-        bed = Bed.objects.get(id=bed_id)
-        bed.is_occupied = not bed.is_occupied
-        bed.save()
-        return Response(BedSerializer(bed).data)
-    except Bed.DoesNotExist:
-        return Response({'error': 'Bed not found'}, status=status.HTTP_404_NOT_FOUND)
-
-# NEW: Combined view for GET and PUT requests on patient details
-@api_view(['GET', 'PUT']) # Accept both GET and PUT
+@api_view(['GET', 'PUT']) 
 def patient_detail_view(request, patient_id):
     """
     Get or Update an existing patient's details.
@@ -187,22 +178,16 @@ def patient_detail_view(request, patient_id):
 
 @api_view(['POST'])
 def assign_patient_to_bed(request, patient_id):
-    """
-    Assigns a patient to a new bed.
-    This ends the current active assignment (if any) and creates a new one.
-    It also updates the `is_occupied` flag on the old and new beds.
-    """
+   
     try:
         patient = Patient.objects.get(id=patient_id)
     except Patient.DoesNotExist:
         return Response({'error': 'Patient not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    # Get the user making the request (assuming authentication is handled)
     user = request.user
     if not user.is_authenticated:
         return Response({'error': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
 
-    # Get the bed ID from the request data
     bed_id = request.data.get('bed_id')
     if not bed_id:
         return Response({'error': 'Bed ID is required'}, status=status.HTTP_400_BAD_REQUEST)
@@ -212,8 +197,6 @@ def assign_patient_to_bed(request, patient_id):
     except Bed.DoesNotExist:
         return Response({'error': 'Bed not found'}, status=status.HTTP_404_NOT_FOUND)
 
-    # Check if the new bed is occupied (unless it's the same as the current one)
-    # Get current assignment to check if it's the same bed
     active_assignment = PatientBedAssignmentHistory.objects.filter(
         patient=patient,
         end_time__isnull=True
@@ -280,8 +263,6 @@ def get_all_patients(request):
     serializer = PatientListWithLocationSerializer(patients, many=True)
     return Response(serializer.data)
 
-# ... keep other views like create_patient, discharge_patient, etc. ... (unchanged)
-
 @api_view(['GET'])
 def get_patient_bed_history(request, patient_id):
     """Get patient bed assignment history"""
@@ -324,10 +305,7 @@ def get_all_patients_with_history(request):
 
 @api_view(['GET'])
 def get_patient_related_device_history(request, patient_id):
-    """
-    Get device bed assignment history for all beds a specific patient has been assigned to.
-    This view provides the data specifically for the "Device Assignment History (Related to Patient's Beds)" section.
-    """
+    
     # Validate patient exists
     patient = get_object_or_404(Patient, id=patient_id)
 
@@ -347,9 +325,6 @@ def get_patient_related_device_history(request, patient_id):
 
 @api_view(['GET'])
 def get_device_bed_history_by_device_id(request, device_id):
-    """
-    Get device bed assignment history for a specific device.
-    """
     from sensor_app.models import Device
     try:
         device = Device.objects.get(id=device_id)
@@ -360,6 +335,21 @@ def get_device_bed_history_by_device_id(request, device_id):
         device_id=device_id # Assuming 'device_id' is the foreign key field in DeviceBedAssignmentHistory
     ).select_related('device', 'user', 'bed').order_by('-start_time') # Order by start_time descending
 
-    # Serialize the data
     serializer = DeviceBedAssignmentHistorySerializer(device_assignments, many=True, context={'request': request})
     return Response(serializer.data)
+
+@api_view(['PUT'])
+def update_bed_status(request, bed_id):
+    try:
+        bed = Bed.objects.get(id=bed_id)
+        bed.is_occupied = not bed.is_occupied
+        bed.save()
+        return Response(BedSerializer(bed).data)
+    except Bed.DoesNotExist:
+        return Response({'error': 'Bed not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+
+
+
+

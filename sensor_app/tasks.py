@@ -81,13 +81,6 @@ def update_device_status(device_id):
 
 
 def send_sensor_data_to_websocket(sensor_payload):
-    """
-    Send sensor data to WebSocket consumers for real-time updates.
-    
-    Args:
-        sensor_payload (dict): The sensor data payload
-            Example: {'nodeId': '...', 'level': 21.93, 'batteryPercent': 85, ...}
-    """
     try:
         channel_layer = get_channel_layer()
 
@@ -108,21 +101,9 @@ def send_sensor_data_to_websocket(sensor_payload):
         celery_logger.error(f"❌ WebSocket send error: {e}", exc_info=True)
 
 
-# ============================================
-# MAIN TASK: Process incoming MQTT message
-# ============================================
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=2, queue="celery")
 def process_sensor_data(self, payload):
-    """
-    Process incoming sensor data from MQTT:
-    1. Validate and update device status
-    2. Send immediate WebSocket notification (real-time)
-    3. Queue message for batch database insertion (efficient)
-    
-    Note: Does NOT save to database here to avoid duplication.
-    Database insertion happens in process_sensor_batch().
-    """
     node_id_str = payload.get('node_id')
 
     if not node_id_str:
@@ -135,7 +116,6 @@ def process_sensor_data(self, payload):
         celery_logger.error(f"❌ Invalid 'node_id' format: {node_id_str}")
         return "INVALID_NODE_ID"
 
-    # --- Update Device Status (real-time) ---
     try:
         device = Device.objects.get(id=node_id)
         update_device_status(device.id)
@@ -143,7 +123,6 @@ def process_sensor_data(self, payload):
         celery_logger.warning(f"⚠️ Device with ID {node_id} not found in database. Message: {payload}")
         return "DEVICE_NOT_FOUND"
 
-    # --- Parse data for WebSocket ---
     reading_value = payload.get("reading")
     if reading_value is None:
         celery_logger.warning(f"⚠️ No 'reading' field in payload: {payload}")
@@ -199,10 +178,7 @@ def process_sensor_data(self, payload):
 
 
 def save_single_reading_to_db(payload, node_id, timestamp):
-    """
-    Fallback function to save a single reading directly to database.
-    Used when Redis queue is unavailable.
-    """
+  
     fluid_bag = FluidBag.objects.filter(device_id=node_id).first()
     if not fluid_bag:
         celery_logger.warning(f"⚠️ FluidBag not found for device {node_id}")
@@ -214,7 +190,7 @@ def save_single_reading_to_db(payload, node_id, timestamp):
 
     with transaction.atomic():
         SensorReading.objects.create(
-            fluidBag=fluid_bag,
+            fluid_bag=fluid_bag,
             reading=int(reading_value),
             timestamp=timestamp,
             via=bool(payload.get("via")),
@@ -326,7 +302,7 @@ def process_sensor_batch(self):
 
                 readings_to_insert.append(
                     SensorReading(
-                        fluidBag=fluid_bag,
+                        fluid_bag=fluid_bag,
                         reading=int(reading_value),
                         timestamp=ts,
                         via=bool(msg.get("via")),
