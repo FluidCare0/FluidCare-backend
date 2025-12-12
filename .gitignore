@@ -65,3 +65,6 @@ Pipfile.lock
 node_modules/
 dist/
 build/
+
+certs
+isrgrootx1.pem

@@ -1,4 +1,3 @@
-Here’s a comprehensive `README.md` file for your Django project, including setup instructions, dependencies, and pip commands. I’ve structured it in a clear, professional format:
 
 ---
 
@@ -15,6 +14,27 @@ A Django project with JWT authentication, REST API support, CORS handling, Redis
 * Twilio SMS integration
 * Rate limiting using `django-ratelimit`
 * Swagger API documentation using `drf-yasg`
+
+---
+
+##  Running the System
+
+### Running Celery
+
+* ``` celery -A core worker --beat --scheduler django --loglevel=info --pool=solo ```
+
+
+### Option 1: Manual Start (Development)
+
+* Terminal 1 - Run Django with Daphne:
+```daphne -b 0.0.0.0 -p 8000 core.asgi:application```
+
+* Terminal 2 - Start MQTT Client:
+```python manage.py start_mqtt```
+
+### Option 2: Auto-Start (Production-like)
+The MQTT client auto-starts when Django runs (configured in apps.py).
+bashdaphne -b 0.0.0.0 -p 8000 core.asgi:application
 
 ---
 
@@ -158,11 +178,11 @@ DB_HOST=localhost
 DB_PORT=5432
 
 # Redis URL
-REDIS_URL=redis://127.0.0.1:6379/2
+REDIS_URL=redis://127.0.0.1:6379/0
 
 # CORS Settings
-CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:3000
-CSRF_TRUSTED_ORIGINS=http://localhost:5173,http://localhost:3000
+CORS_ALLOWED_ORIGINS=http://localhost:5175,http://localhost:3000
+CSRF_TRUSTED_ORIGINS=http://localhost:5175,http://localhost:3000
 
 # CSRF & Session Security
 

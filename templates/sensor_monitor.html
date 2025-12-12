@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Sensor Monitoring Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+
+        .sensor-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+        }
+
+        .sensor-card {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 15px;
+        }
+
+        .status-normal {
+            background-color: #d4edda;
+        }
+
+        .status-low {
+            background-color: #fff3cd;
+        }
+
+        .status-high {
+            background-color: #f8d7da;
+        }
+
+        .timestamp {
+            color: #666;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Sensor Monitoring Dashboard</h1>
+    <div id="connection-status">Connecting...</div>
+    <div class="sensor-grid" id="sensor-grid"></div>
+
+    <script>
+        const ws = new WebSocket('ws://' + window.location.host + '/ws/sensors/');
+        const sensorGrid = document.getElementById('sensor-grid');
+        const connectionStatus = document.getElementById('connection-status');
+        const sensors = {};
+
+        ws.onopen = function () {
+            connectionStatus.textContent = 'Connected ✓';
+            connectionStatus.style.color = 'green';
+
+            // Subscribe to floor 3
+            ws.send(JSON.stringify({
+                type: 'subscribe_floor',
+                floor: 3
+            }));
+        };
+
+        ws.onmessage = function (e) {
+            const data = JSON.parse(e.data);
+
+            if (data.type === 'sensor_update') {
+                updateSensorCard(data.data);
+            }
+        };
+
+        ws.onclose = function () {
+            connectionStatus.textContent = 'Disconnected ✗';
+            connectionStatus.style.color = 'red';
+        };
+
+        function updateSensorCard(data) {
+            const nodeId = data.node_id;
+
+            if (!sensors[nodeId]) {
+                sensors[nodeId] = createSensorCard(data);
+                sensorGrid.appendChild(sensors[nodeId]);
+            } else {
+                updateCard(sensors[nodeId], data);
+            }
+        }
+
+        function createSensorCard(data) {
+            const card = document.createElement('div');
+            card.className = 'sensor-card status-' + data.status.toLowerCase();
+            card.innerHTML = `
+                <h3>Node ${data.node_id}</h3>
+                <p><strong>Type:</strong> <span class="type">${data.fluid_bag_type}</span></p>
+                <p><strong>Level:</strong> <span class="level">${data.fluid_level}</span> ml</p>
+                <p><strong>Status:</strong> <span class="status">${data.status}</span></p>
+                ${data.bed_info ? `
+                    <p><strong>Location:</strong> Floor ${data.bed_info.floor_number}, 
+                    Ward ${data.bed_info.ward_number}, Bed ${data.bed_info.bed_number}</p>
+                ` : ''}
+                <p class="timestamp"><span class="time">${new Date(data.timestamp).toLocaleString()}</span></p>
+            `;
+            return card;
+        }
+
+        function updateCard(card, data) {
+            card.className = 'sensor-card status-' + data.status.toLowerCase();
+            card.querySelector('.type').textContent = data.fluid_bag_type;
+            card.querySelector('.level').textContent = data.fluid_level;
+            card.querySelector('.status').textContent = data.status;
+            card.querySelector('.time').textContent = new Date(data.timestamp).toLocaleString();
+        }
+
+        // fetch('/api/sensor-history/7/?hours=24')
+        //     .then(response => response.json())
+        //     .then(data => {
+        //         const ctx = document.getElementById('sensorChart').getContext('2d');
+        //         new Chart(ctx, {
+        //             type: 'line',
+        //             data: {
+        //                 labels: data.map(d => new Date(d.timestamp).toLocaleTimeString()),
+        //                 datasets: [{
+        //                     label: 'Fluid Level (ml)',
+        //                     data: data.map(d => d.fluid_level),
+        //                     borderColor: 'rgb(75, 192, 192)',
+        //                     tension: 0.1
+        //                 }]
+        //             },
+        //             options: {
+        //                 responsive: true,
+        //                 scales: {
+        //                     y: {
+        //                         beginAtZero: true
+        //                     }
+        //                 }
+        //             }
+        //         });
+        //     });
+    </script>
+</body>
+
+</html>

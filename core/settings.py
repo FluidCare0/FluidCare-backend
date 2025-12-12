@@ -2,6 +2,7 @@ import os
 import json
 from pathlib import Path
 from datetime import timedelta
+import uuid
 from decouple import config
 
 # --------------------------
@@ -51,6 +52,7 @@ INSTALLED_APPS = [
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
+    'daphne',
     'django.contrib.staticfiles',
     
     # Third-party
@@ -58,13 +60,17 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'django_ratelimit',
+    'django_celery_results',
+    'django_celery_beat',
     'drf_yasg',
+    'channels',
 
     # Custom apps
     'auth_app',
-    'sensor_app',
+    'sensor_app.apps.SensorAppConfig',
     'hospital_app',
     'survey_app',
+    'notification_app',
 
 ]
 
@@ -90,7 +96,7 @@ ROOT_URLCONF = 'core.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [os.path.join(BASE_DIR, 'templates')],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -104,6 +110,8 @@ TEMPLATES = [
 ]
 
 WSGI_APPLICATION = 'core.wsgi.application'
+
+ASGI_APPLICATION = 'core.asgi.application'
 
 # --------------------------
 # Database
@@ -189,21 +197,94 @@ SIMPLE_JWT = {
 # --------------------------
 # Logging
 # --------------------------
-# LOGGING = {
-#     'version': 1,
-#     'handlers': {
-#         'file': {
-#             'class': 'logging.FileHandler',
-#             'filename': BASE_DIR / 'auth.log',
-#         }
-#     },
-#     'loggers': {
-#         'auth': {
-#             'handlers': ['file'],
-#             'level': 'INFO',
-#         }
-#     },
-# }
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+
+    "formatters": {
+        "verbose": {
+            "format": "[{asctime}] {levelname} {name}: {message}",
+            "style": "{",
+        },
+        "simple": {
+            "format": "{levelname} {message}",
+            "style": "{",
+        },
+    },
+
+    "handlers": {
+        # --- Django Server ---
+        "django_file": {
+            "class": "logging.FileHandler",
+            "filename": os.path.join(LOG_DIR, "django.log"),
+            "formatter": "verbose",
+        },
+
+        # --- Celery ---
+        "celery_file": {
+            "class": "logging.FileHandler",
+            "filename": os.path.join(LOG_DIR, "celery.log"),
+            "formatter": "verbose",
+        },
+
+        # --- Channels ---
+        "channels_file": {
+            "class": "logging.FileHandler",
+            "filename": os.path.join(LOG_DIR, "channels.log"),
+            "formatter": "verbose",
+        },
+
+        # --- Console (optional) ---
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "simple",
+        },
+
+        "mqtt_file": {
+            "class": "logging.FileHandler",
+            "filename": os.path.join(LOG_DIR, "mqtt.log"),
+            "formatter": "verbose",
+        },
+    },
+
+    "loggers": {
+        # Django server logger
+        "django": {
+            "handlers": ["django_file", "console"],
+            "level": "INFO",
+            "propagate": True,
+        },
+
+        # Celery specific logger
+        "celery": {
+            "handlers": ["celery_file", "console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+
+        # Channels specific logger
+        "channels": {
+            "handlers": ["channels_file", "console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+        # ✅ New: MQTT logger
+        "mqtt": {
+            "handlers": ["mqtt_file", "console"],
+            "level": "INFO",
+            "propagate": False,
+        },
+
+        # Root logger (optional catch-all)
+        "": {
+            "handlers": ["console"],
+            "level": "WARNING",
+        },
+    },
+}
 
 # --------------------------
 # Caches / Redis
@@ -221,11 +302,34 @@ CACHES = {
 REDIS_URL = config('REDIS_URL', default='')
 
 # --------------------------
+# Channels
+# --------------------------
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            "hosts": [('127.0.0.1', 6379)],
+        },
+    },
+}
+
+# --------------------------
 # Twilio
 # --------------------------
 TWILIO_ACCOUNT_SID = config('TWILIO_ACCOUNT_SID', default='')
 TWILIO_AUTH_TOKEN = config('TWILIO_AUTH_TOKEN', default='')
 TWILIO_FROM_NUMBER = config('TWILIO_PHONE_NUMBER', default='')
+
+# --------------------------
+# MQTT Client
+# --------------------------
+MQTT_BROKER = "1e578bacd37e4198a99e7a4a28756c6e.s1.eu.hivemq.cloud"
+MQTT_CLIENT_ID = f"django-backend-{uuid.uuid4().hex[:6]}"
+MQTT_USERNAME = "kanbs"    # leave empty for public broker
+MQTT_PASSWORD = "Kartik@3165" 
+MQTT_PORT = 8883
+MQTT_TOPIC = 'be_project/#'
+MQTT_TASK_COMPLETE_TOPIC = 'be_project/task_complete/#'
 
 # # --------------------------
 # # Email
@@ -256,13 +360,36 @@ TWILIO_FROM_NUMBER = config('TWILIO_PHONE_NUMBER', default='')
 # # --------------------------
 # # Celery details
 # # --------------------------
-# CELERY_BROKER_URL = config('CELERY_BROKER_URL',default='redis://localhost:6379/1')
-# CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND')
-# CELERY_ACCEPT_CONTENT = ["json"]
-# CELERY_TASK_SERIALIZER = "json"
-# CELERY_RESULT_SERIALIZER = "json"
-# CELERY_TASK_ACKS_LATE = True
+CELERY_BROKER_URL = config('CELERY_BROKER_URL',default='redis://localhost:6379/1')
+CELERY_RESULT_BACKEND = config('CELERY_RESULT_BACKEND')
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+CELERY_TASK_ACKS_LATE = True
+CELERY_TIMEZONE = 'UTC'
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_TIME_LIMIT = 30 * 60 
 
+CELERY_TASK_DEFAULT_QUEUE = 'celery'
+CELERY_TASK_DEFAULT_EXCHANGE = 'celery'
+CELERY_TASK_DEFAULT_ROUTING_KEY = 'celery'
+
+CELERY_TASK_QUEUES = {
+    'celery': {
+        'exchange': 'celery',
+        'routing_key': 'celery',
+    },
+    'high_priority': {
+        'exchange': 'high_priority',
+        'routing_key': 'high_priority',
+    }
+}
+
+CELERY_TASK_ROUTES = {
+    'sensor_app.tasks.process_alert': {'queue': 'high_priority'},
+    'sensor_app.tasks.process_sensor_batch': {'queue': 'celery'},
+    'sensor_app.tasks.send_alert_notification': {'queue': 'high_priority'},
+}
 
 # CELERY_BEAT_SCHEDULE = {
 #     "flush_daily_comment_usage_every_3_hours": {
