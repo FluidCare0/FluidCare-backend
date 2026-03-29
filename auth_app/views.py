@@ -179,7 +179,7 @@ class CurrentUserView(views.APIView):
         return Response(serializer.data) 
 
 class UserListView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    # permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         # Only root_admin and manager can view users
@@ -221,7 +221,7 @@ class UserListView(APIView):
         })
 
 class UserCreateView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    # permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
         if request.user.role not in ['root_admin', 'manager']:

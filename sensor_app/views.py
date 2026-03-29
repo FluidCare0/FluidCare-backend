@@ -11,224 +11,102 @@ from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from datetime import timedelta
 from django.db.models import Prefetch
-from sensor_app.models import Device, DevicePatientAssignment, FluidBag, SensorReading
+from sensor_app.models import Device, FluidBag, PatientDeviceBedAssignment, SensorReading
 from django.shortcuts import get_object_or_404, render
 from sensor_app.mqtt_client import publish_message
-from sensor_app.serializers import DeviceWithCurrentAssignmentSerializer, FluidBagSerializer, SensorReadingSerializer
+from sensor_app.serializers import DeviceWithCurrentAssignmentSerializer, FluidBagSerializer, PatientDeviceBedAssignmentSerializer, SensorReadingSerializer
 from hospital_app.models import Patient, Bed, Ward
-from survey_app.models import DeviceBedAssignmentHistory, PatientBedAssignmentHistory
-# Import serializers from their respective apps
-from survey_app.serializers import PatientBedAssignmentHistorySerializer, DeviceBedAssignmentHistorySerializer
-from hospital_app.serializers import PatientSerializer # Import from hospital_app
+from hospital_app.serializers import PatientSerializer 
 
 logger = logging.getLogger('django')
 
-class SensorReadingViewSet(viewsets.ReadOnlyModelViewSet):
-    pass
+
 
 def sensor_dashboard(request):
     return render(request, 'sensor_monitor.html')
 
-@api_view(['POST']) # Or PUT/PATCH if you prefer
-# @permission_classes([IsAuthenticated])
-def remove_device_from_dashboard(request, device_id):
-    """
-    API endpoint to manually remove a device from the dashboard view.
-    Sends an MQTT command to the device to stop, and sets Device.removed_from_dashboard to True.
-    """
-    device = get_object_or_404(Device, id=device_id)
-    pass
+@api_view(['GET'])
+def get_all_devices(request):    
+    active_assignments = (
+        PatientDeviceBedAssignment.objects
+        .filter(end_time__isnull=True, device__isnull=False)   # 👈 exclude device NULL
+        .select_related('patient', 'device', 'bed', 'ward', 'floor')
+    )
+    
+    serializer = PatientDeviceBedAssignmentSerializer(active_assignments, many=True)
+    return Response(serializer.data)
 
 @api_view(['GET'])
-# @permission_classes([IsAuthenticated])
-def get_all_devices(request):
-    """
-    Get all devices of type 'node' with their current patient assignment and fluid bag details.
-    OPTIMIZED: Uses prefetch_related with Prefetch objects to minimize database queries.
-    NOW: Filters out devices marked as removed_from_dashboard.
-    """
-    
-    # Get all active patient assignments upfront to reduce queries
-    active_patient_assignments = PatientBedAssignmentHistory.objects.filter(
-        end_time__isnull=True
-    ).select_related('patient', 'bed')
-    
-    # Create a dictionary mapping bed_id to patient for quick lookups
-    bed_to_patient = {
-        assignment.bed_id: assignment.patient  # type: ignore
-        for assignment in active_patient_assignments
-    }
-    
-    # Query DeviceBedAssignmentHistory for active assignments with optimized prefetching
-    # --- ADD FILTER FOR removed_from_dashboard (assuming you added the field) ---
-    active_device_assignments = DeviceBedAssignmentHistory.objects.filter(
-        end_time__isnull=True,
-        device__type='node',
-        device__removed_from_dashboard=False # Filter out manually removed devices
-    ).select_related(
-        'device',           # Join assignment -> device
-        'bed',              # Join assignment -> bed
-        'bed__ward',        # Join bed -> ward
-        'user'              # Join assignment -> user
-    ).prefetch_related(
-        'device__fluidBag'  # Prefetch FluidBags for all devices
-    ).all()
-    # ---
-
-    # Prepare the list of data structures
-    device_data_list = []
-    
-    for device_assignment in active_device_assignments:
-        device = device_assignment.device
-        bed = device_assignment.bed
-        ward = bed.ward if bed else None
-        
-        # Get patient from the pre-built dictionary (no extra query!)
-        patient = bed_to_patient.get(bed.id) if bed else None
-
-        # Get the FluidBag for this device
-        fluid_bags = device.fluidBag.all()
-        fluid_bag_instance = fluid_bags.first() if fluid_bags.exists() else None
-        fluid_bag_data = FluidBagSerializer(fluid_bag_instance).data if fluid_bag_instance else None
-
-        # Determine status based on backend status and stop_at field
-        status_display = 'Offline' # Default to Offline
-        if device.status and not device.stop_at:
-            # DB status is True and stop_at is not set -> Active
-            status_display = 'Activate'
-        elif device.stop_at:
-            # stop_at is set -> Task Completed or Disconnected (determine based on context or separate field if needed)
-            # For simplicity, let's call it 'Inactive' here, but you might want to differentiate
-            status_display = 'Task_Completed' # Or 'Disconnected' if process_disconnect sets it
-
-        # Build the data dictionary
-        device_data = {
-            'id': str(device.id),
-            'mac_address': device.mac_address,
-            'type': device.type,
-            'status': device.status, # Boolean status from DB
-            'status_display': status_display, # String for frontend display
-            'stop_at': device.stop_at,
-            # 'removed_from_dashboard': device.removed_from_dashboard, # Usually not needed if filtered out
-            'fluidBag': fluid_bag_data,
-            'current_patient': patient.name if patient else None,
-            'current_bed_number': bed.bed_number if bed else None,
-            'current_ward_number': ward.ward_number if ward else None,
-            'current_ward_name': ward.name if ward else None,
-        }
-        device_data_list.append(device_data)
-
-    return Response(device_data_list)
-
-
-@api_view(['GET'])
-# @permission_classes([IsAuthenticated])
 def get_patient_details_by_device(request, device_id):
     """
-    Get detailed patient information for the patient currently assigned to the given device.
-    Handles potential serialization errors gracefully.
+    Get patient details for the active assignment of the given device.
+    """
+    assignment = PatientDeviceBedAssignment.objects.filter(
+        device_id=device_id,
+        end_time__isnull=True
+    ).select_related('patient').first()
+
+    if not assignment:
+        return Response({'detail': 'No active assignment found for this device.'}, status=404)
+
+    serializer = PatientSerializer(assignment.patient)
+    return Response(serializer.data)
+
+@api_view(['POST'])
+def remove_device_from_dashboard(request, device_id):
+    """
+    Manually deactivate a device and mark its assignment as ended.
     """
     device = get_object_or_404(Device, id=device_id)
-    device_assignment = device.current_assignment # This is a DeviceBedAssignmentHistory object
+    assignment = PatientDeviceBedAssignment.objects.filter(device=device, end_time__isnull=True).first()
 
-    if device_assignment and device_assignment.bed: # Check if the device is assigned to a bed
-        bed = device_assignment.bed
-        # Now, find the *current* patient assigned to *this* bed
-        # Use the related name 'patient_bed_assignments' from the Patient model
-        # or the PatientBedAssignmentHistory model directly
-        patient_assignment = PatientBedAssignmentHistory.objects.filter(
-            bed=bed,
-            end_time__isnull=True # Find the active assignment
-        ).select_related('patient').first() # Get the first (and should be only) active assignment
+    if not assignment:
+        return Response({'error': 'No active assignment found for this device.'}, status=404)
 
-        if patient_assignment and patient_assignment.patient:
-            patient = patient_assignment.patient
-            try:
-                # Use the PatientSerializer from hospital_app.serializers
-                serializer = PatientSerializer(patient)
-                patient_data = serializer.data
+    assignment.end_time = timezone.now()
+    assignment.save()
 
-                # Optional: Add a check if the serialized data seems valid
-                # (e.g., contains expected keys like 'name').
-                if 'name' in patient_data:
-                    return Response(patient_data)
-                else:
-                    logger.warning(f"PatientSerializer returned incomplete data for patient {patient.id} via device {device_id}")
-                    return Response({
-                        'id': str(patient.id),
-                        'name': patient.name,
-                        'age': patient.age,
-                        'gender': patient.gender,
-                        'contact': patient.contact,
-                        'admitted_at': patient.admitted_at,
-                        'discharged_at': patient.discharged_at
-                    })
+    # Send MQTT command to stop
+    topic = 'be_project/device/stop'
+    payload = {"command": "STOP", "node_id": str(device.id)}
+    publish_message(topic, payload)
 
-            except Exception as e:
-                # If serialization fails (e.g., due to missing prefetched related objects),
-                # log the error and return a minimal response based on the assignment.
-                logger.error(f"Error serializing patient {patient.id} details for device {device_id}: {e}", exc_info=True)
-                return Response({
-                    'id': str(patient.id),
-                    'name': patient.name,
-                    'age': patient.age,
-                    'gender': patient.gender,
-                    'contact': patient.contact,
-                    'admitted_at': patient.admitted_at,
-                    'discharged_at': patient.discharged_at
-                }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-        else:
-            # No patient is currently assigned to the bed where the device is located
-            return Response({'detail': 'No patient currently assigned to the bed where this device is located.'}, status=status.HTTP_404_NOT_FOUND)
-    else:
-        # The device itself is not assigned to any bed
-        return Response({'detail': 'Device is not currently assigned to any bed.'}, status=status.HTTP_404_NOT_FOUND)
+    device.status = False
+    device.save(update_fields=['status'])
+
+    return Response({'message': 'Device removed successfully and stop command sent.'})
 
 
 @api_view(['GET'])
-# @permission_classes([IsAuthenticated])
 def get_patient_assignment_history_by_device(request, device_id):
     """
-    Get the patient bed assignment history for the patient currently assigned to the given device.
+    Get all assignment records (active + historical) for a given device.
     """
-    device = get_object_or_404(Device, id=device_id)
-    device_assignment = device.current_assignment # This is a DeviceBedAssignmentHistory object
+    history = PatientDeviceBedAssignment.objects.filter(device_id=device_id)\
+        .select_related('patient', 'device', 'bed', 'ward', 'floor')\
+        .order_by('-start_time')
 
-    if device_assignment and device_assignment.bed: # Check if the device is assigned to a bed
-        bed = device_assignment.bed
-        # Find the *current* patient assigned to *this* bed
-        patient_assignment = PatientBedAssignmentHistory.objects.filter(
-            bed=bed,
-            end_time__isnull=True
-        ).select_related('patient').first()
-
-        if patient_assignment and patient_assignment.patient:
-            patient = patient_assignment.patient
-            # Get all history entries for this patient
-            history = PatientBedAssignmentHistory.objects.filter(patient=patient).select_related('patient', 'user', 'bed').order_by('-start_time')
-            # Use the PatientBedAssignmentHistorySerializer from survey_app.serializers
-            serializer = PatientBedAssignmentHistorySerializer(history, many=True, context={'request': request})
-            return Response(serializer.data)
-        else:
-            # No patient currently assigned to the bed
-            return Response([])
-    else:
-        # Device not assigned to a bed
-        return Response([])
+    serializer = PatientDeviceBedAssignmentSerializer(history, many=True)
+    return Response(serializer.data)
 
 
 @api_view(['GET'])
-# @permission_classes([IsAuthenticated])
 def get_device_assignment_history(request, device_id):
     """
-    Get the device bed assignment history for the given device ID.
+    Return the assignment history (active + past) for the given device.
+    Uses the unified PatientDeviceBedAssignment model.
     """
     device = get_object_or_404(Device, id=device_id)
-    # Get all history entries for this device
-    history = DeviceBedAssignmentHistory.objects.filter(device=device).select_related('device', 'user', 'bed').order_by('-start_time')
-    # Use the DeviceBedAssignmentHistorySerializer from survey_app.serializers
-    serializer = DeviceBedAssignmentHistorySerializer(history, many=True, context={'request': request})
+
+    history = PatientDeviceBedAssignment.objects.filter(
+        device=device
+    ).select_related(
+        'patient', 'device', 'bed', 'ward', 'floor', 'user'
+    ).order_by('-start_time')
+
+    serializer = PatientDeviceBedAssignmentSerializer(history, many=True, context={'request': request})
     return Response(serializer.data)
+
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
@@ -262,65 +140,84 @@ def get_sensor_history_view(request, device_id): # device_id is now the UUID
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_sensor_history(request, device_id):
+    """
+    Get sensor reading history for a given device (last N hours).
+    """
     hours = int(request.GET.get('hours', 24))
-    try:
-        device = Device.objects.get(id=device_id)
-        fluid_bag = device.fluidBag.first()
-        if not fluid_bag:
-            return Response({'error': 'No fluid bag'}, status=404)
-        start_time = timezone.now() - timedelta(hours=hours)
-        readings = SensorReading.objects.filter(fluidBag=fluid_bag, timestamp__gte=start_time).order_by('timestamp')
-        return Response(SensorReadingSerializer(readings, many=True).data)
-    except Device.DoesNotExist:
-        return Response({'error': 'Device not found'}, status=404)
+    start_time = timezone.now() - timedelta(hours=hours)
+
+    device = get_object_or_404(Device, id=device_id)
+    fluid_bag = device.fluid_bags.first()
+
+    if not fluid_bag:
+        return Response({'error': 'No fluid bag linked to this device.'}, status=404)
+
+    readings = SensorReading.objects.filter(fluidBag=fluid_bag, timestamp__gte=start_time)\
+        .order_by('timestamp')
+
+    serializer = SensorReadingSerializer(readings, many=True)
+    return Response(serializer.data)
     
 
 @api_view(['POST'])
 def register_node(request):
-    # return Response({"message": "FUCK TEAM PROJECT",}, status=200)
     mac = request.data.get('mac')
     patient_id = request.data.get('patient_id')
+    bed_number = request.data.get('bed')
     fluid_type = request.data.get('fluid_type')
     fluid_capacity = request.data.get('fluid_capacity')
 
-    if not all([mac, patient_id, fluid_type, fluid_capacity]):
+    if not all([mac, patient_id, bed_number, fluid_type, fluid_capacity]):
         return Response({"error": "Missing required fields."}, status=400)
 
-    device_in = Device.objects.create(mac_address=mac, type='node')
+    patient = get_object_or_404(Patient, id=patient_id)
+    bed = get_object_or_404(Bed, bed_number=bed_number)
+    ward = bed.ward
+    floor = ward.floor
 
-    fluid_in = FluidBag.objects.create(
-        device=device_in,
+    assignment, created = PatientDeviceBedAssignment.objects.get_or_create(
+        patient=patient,
+        bed=bed,
+        end_time__isnull=True,
+        defaults={
+            "ward": ward,
+            "floor": floor,
+            "user": request.user if request.user.is_authenticated else None
+        }
+    )
+
+    bed.is_occupied = True
+    bed.save()
+
+    device = Device.objects.create(
+        mac_address=mac,
+        type='node'
+    )
+
+    fluid_bag = FluidBag.objects.create(
+        device=device,
         type=fluid_type,
         capacity_ml=fluid_capacity
     )
 
-    patient_in = get_object_or_404(Patient, id=patient_id)
-
-    final = DevicePatientAssignment.objects.create(
-        device=device_in,
-        fluid=fluid_in,
-        patient=patient_in,
-        user=request.user
-    )
+    assignment.device = device
+    assignment.save()
 
     topic = 'be_project/test/in'
     payload = {
         "request_code": 202,
-        "mac": final.device.mac_address,
-        "node_id": str(final.device.id)
+        "mac": device.mac_address,
+        "node_id": str(device.id)
     }
 
-    print("\n" + "=" * 50)
-    print("📤 JSON PAYLOAD TO PUBLISH")
-    print("=" * 50)
-    print(json.dumps(payload, indent=2))
-    print("=" * 50 + "\n")
-
+    logger.info(f"📤 MQTT Payload Sent: {json.dumps(payload)}")
     publish_message(topic, payload)
 
     return Response({
-        "message": "Device assigned successfully",
-        "node_id": str(final.device.id),
-        "patient": final.patient.name
+        "message": "Device registered and assigned successfully.",
+        "node_id": str(device.id),
+        "patient": patient.name,
+        "bed": bed.bed_number if hasattr(bed, 'bed_number') else str(bed.id),
+        "ward": ward.name,
+        "floor": getattr(floor, 'name', f"Floor {getattr(floor, 'floor_number', '')}")
     }, status=200)
-

@@ -157,7 +157,7 @@ USE_TZ = True
 # --------------------------
 # Static files
 # --------------------------
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # --------------------------
@@ -321,6 +321,13 @@ TWILIO_AUTH_TOKEN = config('TWILIO_AUTH_TOKEN', default='')
 TWILIO_FROM_NUMBER = config('TWILIO_PHONE_NUMBER', default='')
 
 # --------------------------
+# Master OTP Bypass (dev/staging only)
+# --------------------------
+# These are ignored in production because the bypass gate checks DEBUG=False.
+MASTER_PHONE = config('MASTER_PHONE', default='')
+MASTER_OTP = config('MASTER_OTP', default='')
+
+# --------------------------
 # MQTT Client
 # --------------------------
 MQTT_BROKER = "1e578bacd37e4198a99e7a4a28756c6e.s1.eu.hivemq.cloud"
@@ -399,3 +406,10 @@ CELERY_TASK_ROUTES = {
 #     },
 # }
 
+
+
+STATIC_ROOT = BASE_DIR / "staticfiles"
+
+STATICFILES_DIRS = [
+    BASE_DIR / "static"
+]

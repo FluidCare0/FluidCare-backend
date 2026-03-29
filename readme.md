@@ -49,11 +49,6 @@ bashdaphne -b 0.0.0.0 -p 8000 core.asgi:application
 
 ## Installation
 
-1. **Clone the repository**
-
-```bash
-git clone https://github.com/kartik3165/BE-Project-backend.git
-```
 
 2. **Create and activate a virtual environment**
 

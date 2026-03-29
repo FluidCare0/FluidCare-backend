@@ -1,9 +1,10 @@
+from django.utils import timezone
 from django.db import models
 import uuid
 from django.db.models import Q, UniqueConstraint
 from django.core.exceptions import ValidationError
 
-from hospital_app.models import Patient, User
+from hospital_app.models import Bed, Floor, Patient, User, Ward
 
 class Device(models.Model):
     TYPE = [
@@ -19,6 +20,8 @@ class Device(models.Model):
     last_seen = models.DateTimeField(null=True, blank=True)
     stop_at = models.DateTimeField(null=True, blank=True)
     removed_from_dashboard = models.BooleanField(default=False)
+    created_at = models.DateTimeField(default=timezone.now) # ✅ add this
+    updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
         return f'{self.type.capitalize()} - {self.mac_address}'
@@ -99,46 +102,52 @@ class SensorReading(models.Model):
     def __str__(self):
         return f'{self.fluid_bag.get_type_display()} - {self.reading}ml at {self.timestamp}'
     
-class DevicePatientAssignment(models.Model):
-    device = models.ForeignKey(Device, on_delete=models.CASCADE, related_name='patient_assignments', null=True, blank=True)
-    fluid = models.ForeignKey(FluidBag, on_delete=models.CASCADE, related_name='patient_assignments', null=True, blank=True)
-    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='device_assignments', null=True, blank=True)
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='device_patient_assignments', null=True, blank=True)
+class PatientDeviceBedAssignment(models.Model):
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name="assignments", null=True, blank=True)
+    device = models.ForeignKey(Device, on_delete=models.CASCADE, related_name="assignments", null=True, blank=True)
+    bed = models.ForeignKey(Bed, on_delete=models.CASCADE, related_name="assignments", null=True, blank=True)
+    ward = models.ForeignKey(Ward, on_delete=models.CASCADE, related_name="assignments", null=True, blank=True)
+    floor = models.ForeignKey(Floor, on_delete=models.CASCADE, related_name="assignments", null=True, blank=True)
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     start_time = models.DateTimeField(auto_now_add=True)
-    end_time = models.DateTimeField(blank=True, null=True)
+    end_time = models.DateTimeField(null=True, blank=True)
     notes = models.TextField(blank=True, null=True)
 
     def clean(self):
-        # Check if device is already assigned to another patient
-        active_device_assignment = DevicePatientAssignment.objects.filter(
-            device=self.device,
-            end_time__isnull=True
-        ).exclude(pk=self.pk).exists()
+        """Ensure each patient, device, and bed have only one active assignment."""
 
-        if active_device_assignment:
-            raise ValidationError(
-                f"Device {self.device.mac_address} is already assigned to another patient."
-            )
+        # validate device only if present
+        if self.device:
+            if PatientDeviceBedAssignment.objects.filter(device=self.device, end_time__isnull=True).exclude(pk=self.pk).exists():
+                raise ValidationError(f"Device {self.device.id} already in use.")
+
+        # validate bed always
+        if self.bed:
+            if PatientDeviceBedAssignment.objects.filter(bed=self.bed, end_time__isnull=True).exclude(pk=self.pk).exists():
+                raise ValidationError(f"Bed {self.bed.bed_number} already occupied.")
 
     def save(self, *args, **kwargs):
+        """Auto-fill ward and floor if not set."""
+        if self.bed and not self.ward:
+            self.ward = self.bed.ward
+        if self.ward and not self.floor:
+            self.floor = self.ward.floor
         self.clean()
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f'{self.device.mac_address} monitoring {self.patient.name} (Started: {self.start_time})'
-
+        patient_name = self.patient.name if self.patient else "Unassigned Patient"
+        device_mac = self.device.mac_address if self.device else "No Device"
+        bed_number = self.bed.bed_number if self.bed else "No Bed"
+        return f"{patient_name} ↔ {device_mac} ↔ Bed {bed_number}"
+    
     class Meta:
         constraints = [
-            UniqueConstraint(
-                fields=['device'],
-                condition=Q(end_time__isnull=True),
-                name='unique_active_device_patient_assignment'
-            )
+            models.UniqueConstraint(fields=["device"], condition=Q(end_time__isnull=True), name="unique_active_device_assignment"),
+            models.UniqueConstraint(fields=["bed"], condition=Q(end_time__isnull=True), name="unique_active_bed_assignment"),
+            models.UniqueConstraint(fields=["bed", "device"], condition=Q(end_time__isnull=True), name="unique_active_bed_device_assignment")
         ]
         indexes = [
-            models.Index(fields=['device', 'end_time']),
-            models.Index(fields=['patient', 'end_time']),
-            models.Index(fields=['-start_time']),
+            models.Index(fields=["ward"]),
+            models.Index(fields=["floor"]),
         ]
-        verbose_name = 'Device-Patient Assignment'
-        verbose_name_plural = 'Device-Patient Assignments'
