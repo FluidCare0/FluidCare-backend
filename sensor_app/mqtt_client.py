@@ -11,7 +11,7 @@ from channels.layers import get_channel_layer
 import redis
 from sensor_app.models import Device, FluidBag, SensorReading
 from sensor_app.tasks import trigger_batch_task, process_sensor_data, process_task_completion, process_disconnect
-from sensor_app.utils import handle_node_id_request
+from sensor_app.utils import handle_node_id_request, handle_node_reset_request
 import ssl
 # Update imports to use the new tasks
 
@@ -51,6 +51,9 @@ class MQTTClient:
             if task_complete_topic:
                 client.subscribe(task_complete_topic, qos=1)
                 mqtt_logger.info(f'Subscribed to task completion topic: {task_complete_topic}')
+            # Subscribe to node reset requests from master
+            client.subscribe('be_project/node/reset', qos=1)
+            mqtt_logger.info('Subscribed to: be_project/node/reset')
         else:
             mqtt_logger.error(f'Failed to connect, return code {rc}')
 
@@ -90,6 +93,10 @@ class MQTTClient:
                 topic = msg.topic
                 payload = json.loads(msg.payload.decode())
                 handle_node_id_request(self, topic, payload)
+
+            elif 'be_project/node/reset' in topic:
+                handle_node_reset_request(self, topic, payload)
+                mqtt_logger.info(f"✅ Node reset request handled for topic {topic}")
 
             
         
