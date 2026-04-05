@@ -23,7 +23,7 @@ class SensorReadingInline(admin.TabularInline):
 # --- Device Admin ---
 @admin.register(Device)
 class DeviceAdmin(admin.ModelAdmin):
-    list_display = ('mac_address', 'type', 'status', 'stop_at', 'removed_from_dashboard')
+    list_display = ('mac_address', 'type', 'status', 'last_seen', 'created_at')
     list_filter = ('status', 'type')
     search_fields = ('mac_address',)
     inlines = [FluidBagInline]
@@ -114,3 +114,11 @@ class FluidBagAdmin(admin.ModelAdmin):
     list_display = ('device', 'type', 'capacity_ml', 'threshold_low', 'threshold_high')
     search_fields = ('device__mac_address', 'type')
     list_filter = ('type',)
+
+@admin.register(SensorReading)
+class SensorReadingAdmin(admin.ModelAdmin):
+    list_display = ('fluid_bag', 'reading', 'battery_percent', 'timestamp', 'via')
+    list_filter = ('fluid_bag__device', 'timestamp', 'via')
+    search_fields = ('fluid_bag__device__mac_address',)
+    readonly_fields = ('timestamp',)
+

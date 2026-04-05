@@ -393,18 +393,21 @@ CELERY_TASK_QUEUES = {
 }
 
 CELERY_TASK_ROUTES = {
-    'sensor_app.tasks.process_alert': {'queue': 'high_priority'},
+    'notification_app.tasks.process_alert': {'queue': 'high_priority'},
     'sensor_app.tasks.process_sensor_batch': {'queue': 'celery'},
-    'sensor_app.tasks.send_alert_notification': {'queue': 'high_priority'},
+    'notification_app.tasks.send_alert_notification': {'queue': 'high_priority'},
 }
 
-# CELERY_BEAT_SCHEDULE = {
-#     "flush_daily_comment_usage_every_3_hours": {
-#         "task": "subscription_app.tasks.flush_daily_comment_usage",
-#         "schedule": crontab(minute=0, hour=0),  # every mid night
-#         "options": {"queue": "daily_usage_queue"},   # optional, specify queue
-#     },
-# }
+CELERY_BEAT_SCHEDULE = {
+    'check-device-connectivity-every-30-seconds': {
+        'task': 'sensor_app.tasks.check_device_connectivity',
+        'schedule': 30.0,
+    },
+    'retry-high-severity-notifications-every-5-minutes': {
+        'task': 'notification_app.tasks.retry_high_severity_notifications',
+        'schedule': 150.0, # 5 minutes
+    },
+}
 
 
 

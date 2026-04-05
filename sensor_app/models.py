@@ -12,14 +12,18 @@ class Device(models.Model):
         ('repeater', 'Repeater'),
         ('master', 'Master')
     ]
+    STATUS_CHOICES = [
+        ('online', 'Online'),
+        ('offline', 'Offline'),
+        ('completed', 'Task Completed'),
+    ]
     id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False, primary_key=True)  # Changed to editable=False
     mac_address = models.CharField(max_length=150, db_index=True)
     type = models.CharField(max_length=50, choices=TYPE, default='node')
-    status = models.BooleanField(default=False)  # Active / Inactive
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='offline')
     installed_at = models.DateTimeField(auto_now_add=True)
     last_seen = models.DateTimeField(null=True, blank=True)
-    stop_at = models.DateTimeField(null=True, blank=True)
-    removed_from_dashboard = models.BooleanField(default=False)
+
     created_at = models.DateTimeField(default=timezone.now) # ✅ add this
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -59,7 +63,6 @@ class Device(models.Model):
     class Meta:
         indexes = [
             models.Index(fields=['type', 'status']),
-            models.Index(fields=['status', 'removed_from_dashboard']),
         ]
    
 class FluidBag(models.Model):
@@ -73,14 +76,14 @@ class FluidBag(models.Model):
     capacity_ml = models.PositiveBigIntegerField()
     threshold_low = models.PositiveIntegerField(blank=True, null=True)
     threshold_high = models.PositiveIntegerField(blank=True, null=True)
-    is_active = models.BooleanField(default=True)
+
 
     def __str__(self):
         return f'{self.get_type_display()} on {self.device.mac_address}'
     
     class Meta:
         indexes = [
-            models.Index(fields=['device', 'is_active']),
+            models.Index(fields=['device']),
         ]
    
 class SensorReading(models.Model):

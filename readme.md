@@ -34,7 +34,7 @@ A Django project with JWT authentication, REST API support, CORS handling, Redis
 
 ### Option 2: Auto-Start (Production-like)
 The MQTT client auto-starts when Django runs (configured in apps.py).
-bashdaphne -b 0.0.0.0 -p 8000 core.asgi:application
+bash daphne -b 0.0.0.0 -p 8000 core.asgi:application
 
 ---
 

@@ -3,14 +3,60 @@ import uuid
 import redis
 import logging
 from celery import shared_task
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime, timedelta, timezone as dt_timezone
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from sensor_app.helperFunction import get_device, get_fluid_bag
-from sensor_app.models import Device, FluidBag, SensorReading
+from sensor_app.models import Device, FluidBag, SensorReading, PatientDeviceBedAssignment
 from django.conf import settings
+from django.utils import timezone
+
+from notification_app.models import Notification
+from notification_app.serializers import NotificationSerializer
 
 celery_logger = logging.getLogger('celery')
 
 r = redis.Redis.from_url(settings.REDIS_URL)
+
+
+def send_notification_to_websocket(notification):
+    try:
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            serializer = NotificationSerializer(notification)
+            async_to_sync(channel_layer.group_send)(
+                "sensor_monitoring",
+                {
+                    "type": "handle_notification",
+                    "notification": serializer.data
+                }
+            )
+            celery_logger.info(f"🔔 Sent WebSocket notification: {notification.title}")
+    except Exception as e:
+        celery_logger.error(f"❌ WebSocket notification error: {e}")
+
+
+def create_notification(device, title, message, n_type='info', severity='low'):
+    patient_name = None
+    assignment = PatientDeviceBedAssignment.objects.filter(device=device, end_time__isnull=True).first()
+    if assignment and assignment.patient:
+        patient_name = assignment.patient.name
+
+    notification = Notification.objects.create(
+        recipient=None,
+        created_by=None,
+        device=device,
+        source='system',
+        delivery_scope='global',
+        target_role=None,
+        patient_name=patient_name,
+        title=title,
+        message=message,
+        notification_type=n_type,
+        severity=severity,
+    )
+    send_notification_to_websocket(notification)
+    return notification
 
 @shared_task(queue='high_priority')
 def process_alert(payload):
@@ -64,3 +110,22 @@ def send_alert_notification(node_id=None):
     celery_logger.info(f"📧 Alert notification for node {node_id}")
     # TODO: Implement alert notification logic
     pass
+
+
+@shared_task(queue="celery")
+def retry_high_severity_notifications():
+    unread_high_alerts = Notification.objects.filter(
+        severity='high',
+        is_read=False,
+        is_resolved=False,
+        retry_count__lt=2,
+    )
+
+    for alert in unread_high_alerts:
+        last_time = alert.last_retry or alert.created_at
+        if timezone.now() > last_time + timedelta(minutes=5):
+            alert.retry_count += 1
+            alert.last_retry = timezone.now()
+            alert.save(update_fields=['retry_count', 'last_retry'])
+            send_notification_to_websocket(alert)
+            celery_logger.info(f"🔄 Retrying high-severity alert ({alert.retry_count + 1}/3): {alert.title}")

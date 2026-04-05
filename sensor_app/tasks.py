@@ -13,7 +13,9 @@ from django.conf import settings
 from django.db import transaction, DatabaseError
 from django.utils import timezone
 
-from sensor_app.models import Device, FluidBag, SensorReading
+from notification_app.models import Notification
+from notification_app.tasks import create_notification, send_notification_to_websocket
+from sensor_app.models import Device, FluidBag, SensorReading, PatientDeviceBedAssignment
 from sensor_app.utils import parse_datetime
 
 # Redis connection
@@ -56,8 +58,7 @@ def update_device_status(device_id):
     try:
         # Update last_seen in database
         Device.objects.filter(id=device_id).update(
-            last_seen=timezone.now(),
-            stop_at=None  # Clear stop_at when device comes back online
+            last_seen=timezone.now()
         )
 
         # Update status in Redis cache to 'Activate'
@@ -68,10 +69,10 @@ def update_device_status(device_id):
         cache_key_last_seen = DEVICE_LAST_SEEN_CACHE_KEY.format(device_id)
         r.setex(cache_key_last_seen, OFFLINE_THRESHOLD_SECONDS + 60, int(time.time()))
 
-        # Update DB status to True if it was False
+        # Update DB status to 'online' if it wasn't already
         device = Device.objects.get(id=device_id)
-        if not device.status:
-            Device.objects.filter(id=device_id).update(status=True)
+        if device.status != 'online':
+            Device.objects.filter(id=device_id).update(status='online')
             celery_logger.info(f"✅ Device {device_id} status updated to online")
 
     except Device.DoesNotExist:
@@ -100,8 +101,6 @@ def send_sensor_data_to_websocket(sensor_payload):
     except Exception as e:
         celery_logger.error(f"❌ WebSocket send error: {e}", exc_info=True)
 
-
-
 @shared_task(bind=True, max_retries=3, default_retry_delay=2, queue="celery")
 def process_sensor_data(self, payload):
     node_id_str = payload.get('node_id')
@@ -116,6 +115,7 @@ def process_sensor_data(self, payload):
         celery_logger.error(f"❌ Invalid 'node_id' format: {node_id_str}")
         return "INVALID_NODE_ID"
 
+    # Update device status (last_seen, etc.)
     try:
         device = Device.objects.get(id=node_id)
         update_device_status(device.id)
@@ -139,35 +139,17 @@ def process_sensor_data(self, payload):
         celery_logger.error(f"❌ Error parsing datetime '{datetime_str}': {e}")
         return "DATETIME_PARSE_ERROR"
 
-    # --- Send WebSocket notification immediately (real-time UI update) ---
-    ws_message_data = {
-        'nodeId': node_id_str,
-        'nodeMac': payload.get('node_mac'),
-        'level': int(reading_value),
-        'batteryPercent': payload.get('battery_percent'),
-        'timestamp': ts.isoformat(),
-        'via': bool(payload.get('via')),
-        'repeaterMac': payload.get('repeater_mac'),
-        'masterMac': payload.get('master_mac'),
-    }
-
-    send_sensor_data_to_websocket(ws_message_data)
-    celery_logger.debug(f"📡 Sent WebSocket notification for device {node_id}")
-
-    # --- Add to Redis queue for bulk database insertion ---
     try:
         r.lpush(QUEUE_KEY, json.dumps(payload))
         queue_len = r.llen(QUEUE_KEY)
         celery_logger.debug(f"📥 Added message to queue. Current queue length: {queue_len}")
 
-        # Trigger batch processing if queue is getting large
         if queue_len >= BATCH_SIZE:
             celery_logger.info(f"🚀 Queue length ({queue_len}) reached threshold, triggering batch task")
             trigger_batch_task()
 
     except redis.RedisError as e:
         celery_logger.error(f"❌ Redis error adding to queue: {e}")
-        # Fallback: save directly to database if Redis fails
         try:
             save_single_reading_to_db(payload, node_id, ts)
         except Exception as db_e:
@@ -200,10 +182,6 @@ def save_single_reading_to_db(payload, node_id, timestamp):
         )
     celery_logger.info(f"✅ Fallback: Saved single reading for device {node_id}")
 
-
-# ============================================
-# BATCH TASK: Bulk database insertion
-# ============================================
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=5, queue="celery")
 def process_sensor_batch(self):
@@ -286,17 +264,36 @@ def process_sensor_batch(self):
                     errors += 1
                     continue
 
-                readings_to_insert.append(
-                    SensorReading(
-                        fluid_bag=fluid_bag,
-                        reading=int(reading_value),
-                        timestamp=ts,
-                        via=bool(msg.get("via")),
-                        battery_percent=msg.get("battery_percent"),
-                        repeater_mac=msg.get("repeater_mac"),
-                        master_mac=msg.get("master_mac"),
+                    readings_to_insert.append(
+                        SensorReading(
+                            fluid_bag=fluid_bag,
+                            reading=int(reading_value),
+                            timestamp=ts,
+                            via=bool(msg.get("via")),
+                            battery_percent=msg.get("battery_percent"),
+                            repeater_mac=msg.get("repeater_mac"),
+                            master_mac=msg.get("master_mac"),
+                        )
                     )
-                )
+
+                    # --- Check for Low Fluid Level Threshold ---
+                    if int(reading_value) <= fluid_bag.threshold_low:
+                        # Only create a notification if one doesn't exist for this device in the last 30 mins
+                        recent_notif = Notification.objects.filter(
+                            device=device,
+                            notification_type='warning',
+                            created_at__gte=timezone.now() - timedelta(minutes=30)
+                        ).exists()
+                        
+                        if not recent_notif:
+                            create_notification(
+                                device=device,
+                                title="IV Bottle Low",
+                                message=f"Fluid level for patient {fluid_bag.device.current_assignment.patient.name if fluid_bag.device.current_assignment and fluid_bag.device.current_assignment.patient else 'Unknown'} is at {reading_value}%.",
+                                n_type='warning',
+                                severity='med'
+                            )
+
 
             except Exception as msg_error:
                 celery_logger.error(f"❌ Error processing message {msg}: {msg_error}")
@@ -359,9 +356,16 @@ def process_task_completion(self, payload):
         device = Device.objects.get(id=node_id)
 
         Device.objects.filter(id=device.id).update(
-            stop_at=timezone.now(),
-            status=False
+            status='completed'
         )
+
+        assignment = PatientDeviceBedAssignment.objects.filter(device=device, end_time__isnull=True).first()
+        if assignment:
+            assignment.end_time = timezone.now()
+            assignment.save()
+            if assignment.bed:
+                assignment.bed.is_occupied = False
+                assignment.bed.save(update_fields=['is_occupied'])
 
         cache_key_status = DEVICE_STATUS_CACHE_KEY.format(device.id)
         r.setex(cache_key_status, 600, "Task_Completed")
@@ -398,9 +402,16 @@ def process_disconnect(self, payload):
         device = Device.objects.get(id=node_id)
 
         Device.objects.filter(id=device.id).update(
-            stop_at=timezone.now(),
-            status=False
+            status='offline'
         )
+
+        assignment = PatientDeviceBedAssignment.objects.filter(device=device, end_time__isnull=True).first()
+        if assignment:
+            assignment.end_time = timezone.now()
+            assignment.save()
+            if assignment.bed:
+                assignment.bed.is_occupied = False
+                assignment.bed.save(update_fields=['is_occupied'])
 
         cache_key_status = DEVICE_STATUS_CACHE_KEY.format(device.id)
         r.setex(cache_key_status, 600, "Offline")
@@ -422,20 +433,13 @@ def process_disconnect(self, payload):
     return "DISCONNECTED"
 
 
-# ============================================
-# PERIODIC CONNECTIVITY CHECK
-# ============================================
-
 @shared_task(queue="celery")
 def check_device_connectivity():
     celery_logger.info("🔍 Starting connectivity check task...")
-
-    # Get threshold timestamp
     threshold_time = int(time.time()) - OFFLINE_THRESHOLD_SECONDS
 
     active_not_stopped_devices = Device.objects.filter(
-        status=True,
-        stop_at__isnull=True
+        status='online'
     ).values_list('id', flat=True)
 
     offline_devices_count = 0
@@ -452,9 +456,8 @@ def check_device_connectivity():
                     # Device is offline due to inactivity
                     Device.objects.filter(
                         id=device_id,
-                        status=True,
-                        stop_at__isnull=True
-                    ).update(status=False)
+                        status='online'
+                    ).update(status='offline')
 
                     # Update Redis status cache to 'Offline'
                     cache_key_status = DEVICE_STATUS_CACHE_KEY.format(device_id)
@@ -465,6 +468,15 @@ def check_device_connectivity():
                         f"(last seen {last_seen_timestamp}, threshold {threshold_time})"
                     )
                     offline_devices_count += 1
+
+                    # Create Notification
+                    create_notification(
+                        device=Device.objects.get(id=device_id),
+                        title="Device Offline",
+                        message=f"Device {device_id} has gone offline due to inactivity.",
+                        n_type='error',
+                        severity='high'
+                    )
 
                     # Send WebSocket notification about offline status
                     send_sensor_data_to_websocket({
@@ -482,9 +494,8 @@ def check_device_connectivity():
 
                 Device.objects.filter(
                     id=device_id,
-                    status=True,
-                    stop_at__isnull=True
-                ).update(status=False)
+                    status='online'
+                ).update(status='offline')
 
                 cache_key_status = DEVICE_STATUS_CACHE_KEY.format(device_id)
                 r.setex(cache_key_status, 600, "Offline")
@@ -499,5 +510,4 @@ def check_device_connectivity():
         f"✅ Connectivity check completed. "
         f"{offline_devices_count} devices marked as offline due to inactivity."
     )
-
 

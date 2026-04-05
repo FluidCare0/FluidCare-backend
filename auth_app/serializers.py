@@ -58,12 +58,12 @@ class ProfileInfoSerializer(serializers.Serializer):
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id','mobile','name','role', 'email']
+        fields = '__all__'
 
 class UserManagementSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'mobile', 'name', 'email', 'role', 'is_active', 'created_at', 'updated_at']
+        fields = '__all__'
         read_only_fields = ['created_at', 'updated_at']
 
     def validate_mobile(self, value):
@@ -80,7 +80,7 @@ class UserManagementSerializer(serializers.ModelSerializer):
 class CreateUserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['mobile', 'name', 'email', 'role', 'is_active']
+        fields = '__all__'
         read_only_fields = ['created_at', 'updated_at']
 
     def validate_mobile(self, value):

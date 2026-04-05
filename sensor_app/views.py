@@ -52,29 +52,7 @@ def get_patient_details_by_device(request, device_id):
     serializer = PatientSerializer(assignment.patient)
     return Response(serializer.data)
 
-@api_view(['POST'])
-def remove_device_from_dashboard(request, device_id):
-    """
-    Manually deactivate a device and mark its assignment as ended.
-    """
-    device = get_object_or_404(Device, id=device_id)
-    assignment = PatientDeviceBedAssignment.objects.filter(device=device, end_time__isnull=True).first()
 
-    if not assignment:
-        return Response({'error': 'No active assignment found for this device.'}, status=404)
-
-    assignment.end_time = timezone.now()
-    assignment.save()
-
-    # Send MQTT command to stop
-    topic = 'be_project/device/stop'
-    payload = {"command": "STOP", "node_id": str(device.id)}
-    publish_message(topic, payload)
-
-    device.status = False
-    device.save(update_fields=['status'])
-
-    return Response({'message': 'Device removed successfully and stop command sent.'})
 
 
 @api_view(['GET'])
@@ -130,7 +108,7 @@ def get_sensor_history_view(request, device_id): # device_id is now the UUID
     # Find sensor readings associated with the device's fluid bags
     # This assumes SensorReading links to FluidBag, which links to Device
     readings = SensorReading.objects.filter(
-        fluidBag__device=device, # Filter by the device linked via FluidBag
+        fluid_bag__device=device, # Filter by the device linked via FluidBag
         timestamp__gte=time_threshold
     ).values('reading', 'timestamp').order_by('timestamp') # Select only needed fields
 
@@ -152,7 +130,7 @@ def get_sensor_history(request, device_id):
     if not fluid_bag:
         return Response({'error': 'No fluid bag linked to this device.'}, status=404)
 
-    readings = SensorReading.objects.filter(fluidBag=fluid_bag, timestamp__gte=start_time)\
+    readings = SensorReading.objects.filter(fluid_bag=fluid_bag, timestamp__gte=start_time)\
         .order_by('timestamp')
 
     serializer = SensorReadingSerializer(readings, many=True)

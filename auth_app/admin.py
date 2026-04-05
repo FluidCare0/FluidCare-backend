@@ -56,11 +56,8 @@ class UserAdmin(BaseUserAdmin):
         ),
     )
 
-
-# ---- Register ----
 admin.site.register(User, UserAdmin)
 
-# ---- Admin branding ----
-admin.site.site_header = "Your App Administration"
-admin.site.site_title = "Your App Admin"
-admin.site.index_title = "Welcome to Your App Administration"
+admin.site.site_header = "FluidCare Administration"
+admin.site.site_title = "FluidCare Admin"
+admin.site.index_title = "Welcome to FluidCare Management Portal"

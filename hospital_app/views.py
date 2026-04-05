@@ -80,7 +80,29 @@ def discharge_patient(request, patient_id):
 
     serializer = DischargePatientSerializer(patient, data=request.data, partial=True)
     if serializer.is_valid():
-        serializer.save(discharged_at=request.data.get('discharged_at'))
+        discharged_at = request.data.get('discharged_at') or timezone.now()
+        serializer.save(discharged_at=discharged_at, is_active=False)
+
+        # FIND AND CLOSE ACTIVE ASSIGNMENTS
+        active_assignments = PatientDeviceBedAssignment.objects.filter(
+            patient=patient,
+            end_time__isnull=True
+        )
+
+        for assignment in active_assignments:
+            assignment.end_time = discharged_at
+            assignment.save()
+
+            # RELEASE THE BED
+            if assignment.bed:
+                assignment.bed.is_occupied = False
+                assignment.bed.save()
+            
+            # OPTIONAL: Reset device status if needed
+            # if assignment.device:
+            #     assignment.device.status = 'available'
+            #     assignment.device.save()
+
         return Response(PatientSerializer(patient).data)
     return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 

@@ -18,20 +18,30 @@ class PatientAdmin(admin.ModelAdmin):
 # ------------------------
 # Floor Admin
 # ------------------------
+class WardInline(admin.TabularInline):
+    model = Ward
+    extra = 1
+
 @admin.register(Floor)
 class FloorAdmin(admin.ModelAdmin):
     list_display = ('id', 'floor_number', 'description')
     search_fields = ('floor_number',)
+    inlines = [WardInline]
 
 
 # ------------------------
 # Ward Admin
 # ------------------------
+class BedInline(admin.TabularInline):
+    model = Bed
+    extra = 5
+
 @admin.register(Ward)
 class WardAdmin(admin.ModelAdmin):
     list_display = ('id', 'name', 'ward_number', 'floor')
     search_fields = ('name',)
     list_filter = ('floor',)
+    inlines = [BedInline]
 
 
 # ------------------------

@@ -13,7 +13,6 @@ from sensor_app.models import Device, FluidBag, SensorReading
 from sensor_app.tasks import trigger_batch_task, process_sensor_data, process_task_completion, process_disconnect
 from sensor_app.utils import handle_node_id_request
 import ssl
-# Update imports to use the new tasks
 
 r = redis.Redis.from_url(settings.REDIS_URL)
 QUEUE_KEY = "sensor_queue"
@@ -47,7 +46,7 @@ class MQTTClient:
         if rc == 0:
             mqtt_logger.info('Mqtt broker connected')
             client.subscribe(settings.MQTT_TOPIC, qos=1)
-            task_complete_topic = settings.MQTT_TASK_COMPLETE_TOPIC # Define this in your Django settings
+            task_complete_topic = settings.MQTT_TASK_COMPLETE_TOPIC 
             if task_complete_topic:
                 client.subscribe(task_complete_topic, qos=1)
                 mqtt_logger.info(f'Subscribed to task completion topic: {task_complete_topic}')
@@ -62,27 +61,48 @@ class MQTTClient:
         try:
             topic = msg.topic
             payload = json.loads(msg.payload.decode())
-            mqtt_logger.info(f"📨 Received message on topic '{topic}': {payload}")
+            mqtt_logger.info(f"📨 Received message on topic '{topic}")
 
-            if 'be_project/node/data' in topic and 'be_project/task_complete' not in topic and 'be_project/disconnect' not in topic: # Regular data topic (adjust pattern as needed)
+            if 'be_project/node/data' in topic and 'be_project/task_complete' not in topic and 'be_project/disconnect' not in topic: 
+                node_id = payload.get('node_id')
+                if node_id:
+                    mqtt_logger.info(f"📡 Sending real-time WebSocket update for node {node_id}")
+                    try:
+                        cache_key_status = f"device_status:{node_id}"
+                        status_bytes = r.get(cache_key_status)
+                        status = status_bytes.decode('utf-8') if status_bytes else 'Activate'
+                    except Exception:
+                        status = 'Activate'
+
+                    ws_message = {
+                        'nodeId': node_id,
+                        'nodeMac': payload.get('node_mac'),
+                        'level': int(payload.get('reading', 0)),
+                        'batteryPercent': payload.get('battery_percent'),
+                        'timestamp': payload.get('datetime', timezone.now().isoformat()),
+                        'status': status,
+                        'via': bool(payload.get('via')),
+                        'repeaterMac': payload.get('repeater_mac'),
+                        'masterMac': payload.get('master_mac'),
+                    }
+
+                    if self.channel_layer:
+                        async_to_sync(self.channel_layer.group_send)(
+                            "sensor_monitoring",
+                            {
+                                "type": "handle_sensor_data_from_task",
+                                "sensor_data": ws_message
+                            }
+                        )
+
                 result = process_sensor_data.delay(payload) # type: ignore
                 mqtt_logger.info(f"✅ Sensor processing task queued with ID: {result.id} for topic {topic}")
 
-                r.lpush(QUEUE_KEY, json.dumps(payload))
-                queue_len = r.llen(QUEUE_KEY)
-                mqtt_logger.info(f"📊 Queue length for batch: {queue_len}")
-
-                if queue_len >= BATCH_SIZE: # type: ignore
-                    mqtt_logger.info(f"🎯 Batch size reached ({queue_len} >= {BATCH_SIZE}), triggering batch")
-                    trigger_batch_task()
-                else:
-                    mqtt_logger.debug(f"⏳ Waiting for batch ({queue_len}/{BATCH_SIZE})")
-
-            elif 'be_project/task_complete' in topic: # Task completion topic (adjust pattern as needed)
+            elif 'be_project/task_complete' in topic: 
                 result = process_task_completion.delay(payload) # type: ignore
                 mqtt_logger.info(f"✅ Task completion processing task queued with ID: {result.id} for topic {topic}")
 
-            elif 'be_project/disconnect' in topic: # Disconnect topic (adjust pattern as needed)
+            elif 'be_project/disconnect' in topic: 
                 result = process_disconnect.delay(payload) # type: ignore
                 mqtt_logger.info(f"✅ Disconnect processing task queued with ID: {result.id} for topic {topic}")
 
