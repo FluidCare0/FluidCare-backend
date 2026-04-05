@@ -54,7 +54,7 @@ class SensorReadingSerializer(serializers.ModelSerializer):
     level = serializers.IntegerField(source='reading')
     class Meta:
         model = SensorReading
-        fields = ['level', 'timestamp', 'battery_percent']
+        fields = ['level', 'smoothed_weight', 'timestamp', 'battery_percent']
 
 class DeviceSerializer(serializers.ModelSerializer):
     fluid_bags = FluidBagSerializer(many=True, read_only=True)
