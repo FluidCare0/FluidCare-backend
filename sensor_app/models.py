@@ -90,6 +90,7 @@ class SensorReading(models.Model):
     fluid_bag = models.ForeignKey(FluidBag, on_delete=models.CASCADE, related_name='readings', null=True, blank=True)
     reading = models.PositiveIntegerField(editable=False)
     timestamp = models.DateTimeField(auto_now_add=True, editable=False)
+    smoothed_weight = models.FloatField(null=True, blank=True)
     via = models.BooleanField(default=False)
     battery_percent = models.FloatField(null=True, blank=True)
     repeater_mac = models.CharField(max_length=150, null=True, blank=True)

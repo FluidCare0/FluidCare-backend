@@ -19,7 +19,11 @@ QUEUE_KEY = "sensor_queue"
 LOCK_KEY = "sensor_batch_lock"
 DEBOUNCE_KEY = "sensor_batch_debounce"
 BATCH_SIZE = 1000
-CACHE_TIMEOUT = 60 * 50  
+CACHE_TIMEOUT = 60 * 50
+
+# Signal-processing constants
+SPIKE_THRESHOLD_G = 80   # g – reject if |raw - last_raw| exceeds this
+EWMA_ALPHA = 0.2         # smoothing factor for exponentially weighted moving average
 
 mqtt_logger = logging.getLogger('mqtt')
 
@@ -63,9 +67,36 @@ class MQTTClient:
             payload = json.loads(msg.payload.decode())
             mqtt_logger.info(f"📨 Received message on topic '{topic}")
 
-            if 'be_project/node/data' in topic and 'be_project/task_complete' not in topic and 'be_project/disconnect' not in topic: 
+            if 'be_project/node/data' in topic and 'be_project/task_complete' not in topic and 'be_project/disconnect' not in topic:
                 node_id = payload.get('node_id')
                 if node_id:
+                    raw = int(payload.get('reading', 0))
+
+                    # --- Spike rejection ---
+                    spike_key = f"last_raw:{node_id}"
+                    last_raw_bytes = r.get(spike_key)
+                    if last_raw_bytes is not None:
+                        last_raw = float(last_raw_bytes)
+                        if abs(raw - last_raw) > SPIKE_THRESHOLD_G:
+                            mqtt_logger.warning(
+                                f"⚠️ Spike rejected for {node_id}: "
+                                f"|{raw} - {last_raw:.1f}| > {SPIKE_THRESHOLD_G}g"
+                            )
+                            return
+                    r.setex(spike_key, CACHE_TIMEOUT, raw)
+
+                    # --- EWMA smoothing ---
+                    ewma_key = f"ewma_weight:{node_id}"
+                    prev_ewma_bytes = r.get(ewma_key)
+                    if prev_ewma_bytes is not None:
+                        prev_ewma = float(prev_ewma_bytes)
+                        smoothed = EWMA_ALPHA * raw + (1.0 - EWMA_ALPHA) * prev_ewma
+                    else:
+                        smoothed = float(raw)
+                    r.setex(ewma_key, CACHE_TIMEOUT, smoothed)
+
+                    payload['smoothed_weight'] = smoothed
+
                     mqtt_logger.info(f"📡 Sending real-time WebSocket update for node {node_id}")
                     try:
                         cache_key_status = f"device_status:{node_id}"
@@ -77,7 +108,8 @@ class MQTTClient:
                     ws_message = {
                         'nodeId': node_id,
                         'nodeMac': payload.get('node_mac'),
-                        'level': int(payload.get('reading', 0)),
+                        'level': raw,
+                        'smoothedWeight': round(smoothed, 2),
                         'batteryPercent': payload.get('battery_percent'),
                         'timestamp': payload.get('datetime', timezone.now().isoformat()),
                         'status': status,

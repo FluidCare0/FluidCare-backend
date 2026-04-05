@@ -174,6 +174,7 @@ def save_single_reading_to_db(payload, node_id, timestamp):
         SensorReading.objects.create(
             fluid_bag=fluid_bag,
             reading=int(reading_value),
+            smoothed_weight=payload.get("smoothed_weight"),
             timestamp=timestamp,
             via=bool(payload.get("via")),
             battery_percent=payload.get("battery_percent"),
@@ -264,20 +265,22 @@ def process_sensor_batch(self):
                     errors += 1
                     continue
 
-                    readings_to_insert.append(
-                        SensorReading(
-                            fluid_bag=fluid_bag,
-                            reading=int(reading_value),
-                            timestamp=ts,
-                            via=bool(msg.get("via")),
-                            battery_percent=msg.get("battery_percent"),
-                            repeater_mac=msg.get("repeater_mac"),
-                            master_mac=msg.get("master_mac"),
-                        )
+                readings_to_insert.append(
+                    SensorReading(
+                        fluid_bag=fluid_bag,
+                        reading=int(reading_value),
+                        smoothed_weight=msg.get("smoothed_weight"),
+                        timestamp=ts,
+                        via=bool(msg.get("via")),
+                        battery_percent=msg.get("battery_percent"),
+                        repeater_mac=msg.get("repeater_mac"),
+                        master_mac=msg.get("master_mac"),
                     )
+                )
 
-                    # --- Check for Low Fluid Level Threshold ---
-                    if int(reading_value) <= fluid_bag.threshold_low:
+                # --- Check for Low Fluid Level Threshold (use smoothed if available) ---
+                alert_value = msg.get("smoothed_weight") or int(reading_value)
+                if fluid_bag.threshold_low and alert_value <= fluid_bag.threshold_low:
                         # Only create a notification if one doesn't exist for this device in the last 30 mins
                         recent_notif = Notification.objects.filter(
                             device=device,
