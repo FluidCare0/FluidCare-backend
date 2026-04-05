@@ -1,5 +1,4 @@
 from rest_framework import serializers
-from .models import PatientBedAssignmentHistory, DeviceBedAssignmentHistory
 from hospital_app.models import Patient, Bed, Ward, Floor
 from sensor_app.models import Device
 from django.contrib.auth import get_user_model
@@ -40,20 +39,3 @@ class DeviceSerializer(serializers.ModelSerializer):
         model = Device
         fields = ['id', 'mac_address', 'type', 'status']
 
-class PatientBedAssignmentHistorySerializer(serializers.ModelSerializer):
-    patient = PatientSerializer(read_only=True)
-    user = UserSerializer(read_only=True)
-    bed = BedSerializer(read_only=True)
-    
-    class Meta:
-        model = PatientBedAssignmentHistory
-        fields = ['id', 'patient', 'user', 'bed', 'start_time', 'end_time']
-
-class DeviceBedAssignmentHistorySerializer(serializers.ModelSerializer):
-    device = DeviceSerializer(read_only=True)
-    user = UserSerializer(read_only=True)
-    bed = BedSerializer(read_only=True)
-    
-    class Meta:
-        model = DeviceBedAssignmentHistory
-        fields = ['id', 'device', 'user', 'bed', 'start_time', 'end_time']

@@ -1,34 +1,73 @@
-# from django.db import models
+from django.db import models
 
-# class Alert(models.Model):
-#     PRIORITY_LEVELS = [
-#         ('INFO', 'Information'),
-#         ('WARNING', 'Warning'),
-#         ('CRITICAL', 'Critical'),
-#         ('EMERGENCY', 'Emergency'),
-#     ]
-    
-#     STATUS_CHOICES = [
-#         ('ACTIVE', 'Active'),
-#         ('ACKNOWLEDGED', 'Acknowledged'),
-#         ('RESOLVED', 'Resolved'),
-#     ]
-    
-#     sensor_reading = models.ForeignKey('sensor_app.SensorReading', on_delete=models.CASCADE)
-#     priority = models.CharField(max_length=20, choices=PRIORITY_LEVELS)
-#     message = models.TextField()
-#     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='ACTIVE')
-#     created_at = models.DateTimeField(auto_now_add=True)
-#     acknowledged_at = models.DateTimeField(null=True, blank=True)
-#     acknowledged_by = models.ForeignKey('auth_app.User', on_delete=models.SET_NULL, null=True, blank=True)
-#     resolved_at = models.DateTimeField(null=True, blank=True)
-    
-#     class Meta:
-#         ordering = ['-created_at']
-#         indexes = [
-#             models.Index(fields=['status', '-created_at']),
-#             models.Index(fields=['priority', 'status']),
-#         ]
-    
-#     def __str__(self):
-#         return f"{self.priority} Alert - {self.message[:50]}"
+
+class Notification(models.Model):
+    SOURCE_TYPES = [
+        ('system', 'System'),
+        ('admin', 'Admin'),
+    ]
+    DELIVERY_SCOPES = [
+        ('global', 'Global'),
+        ('all_users', 'All Users'),
+        ('role', 'Specific Role'),
+        ('user', 'Specific User'),
+    ]
+    NOTIFICATION_TYPES = [
+        ('warning', 'Warning'),
+        ('info', 'Info'),
+        ('error', 'Error'),
+    ]
+    SEVERITY_LEVELS = [
+        ('low', 'Low'),
+        ('med', 'Medium'),
+        ('high', 'High'),
+    ]
+
+    id = models.AutoField(primary_key=True)
+    recipient = models.ForeignKey(
+        'auth_app.User',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='received_notifications',
+    )
+    created_by = models.ForeignKey(
+        'auth_app.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_notifications',
+    )
+    device = models.ForeignKey(
+        'sensor_app.Device',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='notifications',
+    )
+    source = models.CharField(max_length=20, choices=SOURCE_TYPES, default='system')
+    delivery_scope = models.CharField(max_length=20, choices=DELIVERY_SCOPES, default='global')
+    target_role = models.CharField(max_length=20, null=True, blank=True)
+    patient_name = models.CharField(max_length=255, null=True, blank=True)
+    title = models.CharField(max_length=255)
+    message = models.TextField()
+    notification_type = models.CharField(max_length=20, choices=NOTIFICATION_TYPES, default='info')
+    severity = models.CharField(max_length=10, choices=SEVERITY_LEVELS, default='low')
+    is_read = models.BooleanField(default=False)
+    is_resolved = models.BooleanField(default=False)
+    retry_count = models.IntegerField(default=0)
+    last_retry = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'sensor_app_notification'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['-created_at'], name='sensor_app__created_5706e6_idx'),
+            models.Index(fields=['is_read'], name='sensor_app__is_read_99bcb6_idx'),
+            models.Index(fields=['recipient']),
+            models.Index(fields=['source', 'delivery_scope']),
+        ]
+
+    def __str__(self):
+        return f"{self.title} - {self.created_at.strftime('%Y-%m-%d %H:%M')}"

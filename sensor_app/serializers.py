@@ -1,16 +1,11 @@
 # sensor_app/serializers.py
 from rest_framework import serializers
-from .models import Device, FluidBag, SensorReading
+from .models import Device, FluidBag, PatientDeviceBedAssignment, SensorReading
 from hospital_app.models import Patient, Bed, Ward # Import related models
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
 
-# Optional: Reuse existing serializers if they exist and are compatible
-# from hospital_app.serializers import PatientSerializer, BedSerializer, WardSerializer # If available
-# from survey_app.serializers import DeviceBedAssignmentHistorySerializer # If available
-
-# If not reusing, create minimal serializers for related fields needed for display
 class WardSerializerForDevice(serializers.ModelSerializer):
     class Meta:
         model = Ward
@@ -31,9 +26,8 @@ class PatientSerializerForDevice(serializers.ModelSerializer):
 class FluidBagSerializer(serializers.ModelSerializer):
     class Meta:
         model = FluidBag
-        fields = ['id', 'type', 'capacity_ml', 'threshold_low', 'threshold_high']
+        fields = "__all__"
 
-# Serializer for Device including FluidBag and Current Assignment details
 class DeviceWithCurrentAssignmentSerializer(serializers.ModelSerializer):
     fluidBag = FluidBagSerializer(read_only=True) # Include fluid bag details
     current_patient = serializers.SerializerMethodField() # Get current patient name
@@ -56,29 +50,32 @@ class DeviceWithCurrentAssignmentSerializer(serializers.ModelSerializer):
             return assignment.patient.name
         return None
 
-    def get_current_bed_number(self, obj):
-        """Get the bed number where the device is currently assigned."""
-        assignment = obj.current_assignment
-        if assignment and assignment.bed:
-            return assignment.bed.bed_number
-        return None
-
-    def get_current_ward_number(self, obj):
-        """Get the ward number where the device is currently assigned."""
-        assignment = obj.current_assignment
-        if assignment and assignment.bed and assignment.bed.ward:
-            return assignment.bed.ward.ward_number
-        return None
-
-    def get_current_ward_name(self, obj):
-        """Get the ward name where the device is currently assigned."""
-        assignment = obj.current_assignment
-        if assignment and assignment.bed and assignment.bed.ward:
-            return assignment.bed.ward.name
-        return None
-
 class SensorReadingSerializer(serializers.ModelSerializer):
     level = serializers.IntegerField(source='reading')
     class Meta:
         model = SensorReading
         fields = ['level', 'timestamp', 'battery_percent']
+
+class DeviceSerializer(serializers.ModelSerializer):
+    fluid_bags = FluidBagSerializer(many=True, read_only=True)
+    class Meta:
+        model = Device
+        fields = ['id', 'mac_address', 'type', 'status', 'fluid_bags']
+
+
+class PatientDeviceBedAssignmentSerializer(serializers.ModelSerializer):
+    device = DeviceSerializer(read_only=True)
+    patient_name = serializers.CharField(source='patient.name', read_only=True)
+    user_name = serializers.CharField(source='user.name', read_only=True)
+    bed_number = serializers.IntegerField(source='bed.bed_number', read_only=True)
+    ward_name = serializers.CharField(source='ward.name', read_only=True)
+    ward_number = serializers.IntegerField(source='ward.ward_number', read_only=True)
+    floor_number = serializers.IntegerField(source='floor.floor_number', read_only=True)
+
+    class Meta:
+        model = PatientDeviceBedAssignment
+        fields = [
+            'id', 'patient_name', 'user_name', 'device', 'bed_number',
+            'ward_name', 'ward_number', 'floor_number',
+            'start_time', 'end_time', 'notes'
+        ]

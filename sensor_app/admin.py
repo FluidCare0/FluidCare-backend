@@ -1,59 +1,124 @@
+# sensor_app/admin.py
 from django.contrib import admin
-from .models import Device, DevicePatientAssignment, FluidBag, SensorReading
+from django.utils.html import format_html
+from django.utils import timezone
+from datetime import timedelta
+from .models import Device, FluidBag, SensorReading, PatientDeviceBedAssignment
+from django.utils.html import format_html
 
-# ------------------------
-# SensorReading Inline
-# ------------------------
+# --- Inline for Fluid Bags ---
+class FluidBagInline(admin.TabularInline):
+    model = FluidBag
+    extra = 0
+    fields = ('type', 'capacity_ml', 'threshold_low', 'threshold_high')
+    readonly_fields = ('type', 'capacity_ml', 'threshold_low', 'threshold_high')
+
+# --- Inline for Sensor Readings (optional for detail view) ---
 class SensorReadingInline(admin.TabularInline):
     model = SensorReading
-    extra = 0  # do not show extra empty forms
-    readonly_fields = ('reading', 'timestamp', )
-    can_delete = False  # prevent deletion from inline (optional)
+    extra = 0
+    readonly_fields = ('reading', 'timestamp')
+    ordering = ('-timestamp',)
 
-
-# ------------------------
-# FluidBag Admin
-# ------------------------
-@admin.register(FluidBag)
-class FluidBagAdmin(admin.ModelAdmin):
-    list_display = ('id', 'type', 'device', 'capacity_ml', 'threshold_low', 'threshold_high')
-    list_filter = ('type', 'device')
-    search_fields = ('device__mac_address', 'type')
-    inlines = [SensorReadingInline]
-    readonly_fields = ('id',)
-
-
-# ------------------------
-# Device Admin
-# ------------------------
+# --- Device Admin ---
 @admin.register(Device)
 class DeviceAdmin(admin.ModelAdmin):
-    list_display = ('id', 'mac_address', 'type',  'installed_at')
-    list_filter = ('type', )
+    list_display = ('mac_address', 'type', 'status', 'last_seen', 'created_at')
+    list_filter = ('status', 'type')
     search_fields = ('mac_address',)
-    readonly_fields = ('id', 'installed_at')
+    inlines = [FluidBagInline]
+    ordering = ('-created_at',)
 
+# --- Main Assignment Admin ---
+@admin.register(PatientDeviceBedAssignment)
+class PatientDeviceBedAssignmentAdmin(admin.ModelAdmin):
+    list_display = (
+        'patient_name',
+        'device_mac',
+        'bed_number',
+        'ward_name',
+        'floor_number',
+        'is_active',
+        'started',
+        'ended',
+        'active_duration'
+    )
+    list_filter = ('ward', 'floor', 'end_time')
+    search_fields = ('patient__name', 'device__mac_address', 'bed__bed_number', 'ward__name')
+    readonly_fields = ('start_time', 'end_time', 'ward', 'floor')
+    list_per_page = 25
 
-# ------------------------
-# SensorReading Admin
-# ------------------------
-@admin.register(SensorReading)
-class SensorReadingAdmin(admin.ModelAdmin):
-    list_display = ('id', 'fluid_bag', 'reading', 'timestamp')
-    list_filter = ('fluid_bag', )
-    search_fields = ('fluidBag__device__mac_address',)
-    readonly_fields = ('reading', 'timestamp', )
+    fieldsets = (
+        ("Assignment Info", {
+            "fields": (
+                "patient", "device", "bed", "ward", "floor", "user", "notes"
+            ),
+        }),
+        ("Timeline", {
+            "fields": ("start_time", "end_time"),
+        }),
+    )
 
-@admin.register(DevicePatientAssignment)
-class DevicePatientAssignmentAdmin(admin.ModelAdmin):
-    list_display = ('device', 'fluid', 'patient', 'user', 'start_time', 'end_time', 'is_active')
-    list_filter = ('end_time', 'user')
-    search_fields = ('device__mac_address', 'patient__name', 'user__username')
-    ordering = ('-start_time',)
-    autocomplete_fields = ('device', 'patient', 'user')
-    readonly_fields = ('start_time',)
+    def patient_name(self, obj):
+        return obj.patient.name
+    patient_name.short_description = "Patient"
+
+    def device_mac(self, obj):
+        mac = obj.device.mac_address if obj.device else "No Device"
+        return format_html("<b>{}</b>", mac)
+    
+    def bed_number(self, obj):
+        return obj.bed.bed_number if obj.bed else "-"
+    bed_number.short_description = "Bed"
+
+    def ward_name(self, obj):
+        return obj.ward.name if obj.ward else "-"
+    ward_name.short_description = "Ward"
+
+    def floor_number(self, obj):
+        return obj.floor.floor_number if obj.floor else "-"
+    floor_number.short_description = "Floor"
+
+    def started(self, obj):
+        return obj.start_time.strftime("%Y-%m-%d %H:%M") if obj.start_time else "-"
+    started.short_description = "Start Time"
+
+    def ended(self, obj):
+        if obj.end_time:
+            return format_html(
+                '<span style="color:#999;">{}</span>',
+                obj.end_time.strftime("%Y-%m-%d %H:%M")
+            )
+        return format_html('<b style="color:green;">Active</b>')
+    ended.short_description = "End Time"
 
     def is_active(self, obj):
         return obj.end_time is None
     is_active.boolean = True
     is_active.short_description = "Active"
+
+    def active_duration(self, obj):
+        if obj.end_time:
+            duration = obj.end_time - obj.start_time
+        else:
+            duration = timezone.now() - obj.start_time
+
+        hours = duration.total_seconds() / 3600
+        color = "#007BFF" if not obj.end_time else "#555"
+        formatted_hours = f"{hours:.1f}"
+        return format_html('<span style="color:{};">{} hr</span>', color, formatted_hours)
+
+# --- Optional: FluidBag Admin (standalone view) ---
+@admin.register(FluidBag)
+class FluidBagAdmin(admin.ModelAdmin):
+    list_display = ('device', 'type', 'capacity_ml', 'threshold_low', 'threshold_high')
+    search_fields = ('device__mac_address', 'type')
+    list_filter = ('type',)
+
+@admin.register(SensorReading)
+class SensorReadingAdmin(admin.ModelAdmin):
+    list_display = ('fluid_bag', 'reading', 'battery_percent', 'timestamp', 'via')
+    list_filter = ('fluid_bag__device', 'timestamp', 'via')
+    search_fields = ('fluid_bag__device__mac_address',)
+    readonly_fields = ('timestamp',)
+

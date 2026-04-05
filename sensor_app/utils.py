@@ -12,25 +12,6 @@ mqtt_logger = logging.getLogger('mqtt')
 django_logger = logging.getLogger('django')
 
 
-def get_bed_info(device):
-    from survey_app.models import DeviceBedAssignmentHistory
-    try:
-        assignment = DeviceBedAssignmentHistory.objects.filter(
-            device=device,
-            end_time__isnull=True
-        ).select_related('bed__ward__floor').first()
-        
-        if assignment:
-            return {
-                'bed_number': assignment.bed.bed_number,
-                'ward_number': assignment.bed.ward.ward_number,
-                'ward_name': assignment.bed.ward.name,
-                'floor_number': assignment.bed.ward.floor.floor_number,
-            }
-    except Exception as e:
-        django_logger.error(f"Error getting bed info: {e}")
-    
-    return None
 
 
 def parse_datetime(datetime_str):

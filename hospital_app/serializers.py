@@ -1,14 +1,13 @@
 # hospital_app/serializers.py
 from rest_framework import serializers
 from .models import Floor, Ward, Bed, Patient
-from survey_app.models import DeviceBedAssignmentHistory, PatientBedAssignmentHistory
-from survey_app.serializers import PatientBedAssignmentHistorySerializer, DeviceBedAssignmentHistorySerializer # type: ignore # Ensure import is here
-from sensor_app.models import Device
+from sensor_app.models import Device, PatientDeviceBedAssignment, FluidBag
+from sensor_app.serializers import FluidBagSerializer
 from django.contrib.auth import get_user_model
 
 User = get_user_model()
 
-
+# ========== BASIC STRUCTURE SERIALIZERS ==========
 
 class BedSerializer(serializers.ModelSerializer):
     class Meta:
@@ -17,14 +16,12 @@ class BedSerializer(serializers.ModelSerializer):
 
 class WardSerializer(serializers.ModelSerializer):
     beds = BedSerializer(many=True, read_only=True)
-    
     class Meta:
         model = Ward
         fields = ['id', 'floor', 'ward_number', 'name', 'description', 'beds']
 
 class FloorSerializer(serializers.ModelSerializer):
     wards = WardSerializer(many=True, read_only=True)
-    
     class Meta:
         model = Floor
         fields = ['id', 'floor_number', 'name', 'description', 'wards']
@@ -32,7 +29,7 @@ class FloorSerializer(serializers.ModelSerializer):
 class FloorCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Floor
-        fields = ['floor_number', 'description']
+        fields = ['floor_number', 'description', 'name']
 
 class WardCreateSerializer(serializers.ModelSerializer):
     class Meta:
@@ -44,10 +41,12 @@ class BedCreateSerializer(serializers.ModelSerializer):
         model = Bed
         fields = ['ward', 'bed_number', 'is_occupied']
 
+# ========== USER & PATIENT SERIALIZERS ==========
+
 class UserSerializer(serializers.ModelSerializer):
     class Meta:
         model = User
-        fields = ['id', 'name', 'email'] # Removed first_name, last_name as they don't exist on your custom User model
+        fields = ['id', 'name', 'email']
 
 class PatientSerializer(serializers.ModelSerializer):
     class Meta:
@@ -59,100 +58,147 @@ class PatientDetailSerializer(serializers.ModelSerializer):
         model = Patient
         fields = ['id', 'name', 'age', 'gender', 'contact', 'admitted_at', 'discharged_at']
 
+# ========== DEVICE SERIALIZER ==========
 
 class DeviceSerializer(serializers.ModelSerializer):
     class Meta:
         model = Device
         fields = ['id', 'mac_address', 'type', 'status']
 
+# ========== UPDATED: PATIENT WITH DEVICE + BED HISTORY ==========
 
 class PatientWithHistorySerializer(serializers.ModelSerializer):
-    patient_bed_assignments = serializers.SerializerMethodField()
-    device_bed_assignments = serializers.SerializerMethodField()
-
+    """Shows a patient's device/bed assignment history with ward & floor context."""
+    assignments = serializers.SerializerMethodField()
     current_floor = serializers.SerializerMethodField()
     current_ward = serializers.SerializerMethodField()
     current_bed = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Patient
         fields = [
-            'id', 'name', 'age', 'gender', 'contact', 
-            'admitted_at', 'discharged_at', 'patient_bed_assignments', 
-            'device_bed_assignments',
-            'current_floor', 'current_ward', 'current_bed'
+            'id', 'name', 'age', 'gender', 'contact',
+            'admitted_at', 'discharged_at',
+            'assignments', 'current_floor', 'current_ward', 'current_bed'
         ]
 
-    def get_patient_bed_assignments(self, obj):
-        assignments = obj.patient_bed_assignments.all().order_by('-start_time')
-        # Use the imported serializer
-        return PatientBedAssignmentHistorySerializer(assignments, many=True, context=self.context).data
+    def get_assignments(self, obj):
+        assignments = (
+            PatientDeviceBedAssignment.objects
+            .filter(patient=obj)
+            .select_related('device', 'bed', 'ward', 'floor')
+        )
 
-    def get_device_bed_assignments(self, obj):
-        patient_bed_ids = obj.patient_bed_assignments.values_list('bed__id', flat=True).distinct()
-        device_assignments = DeviceBedAssignmentHistory.objects.filter(
-            bed_id__in=patient_bed_ids
-        ).order_by('-start_time')
-        # Use the imported serializer
-        return DeviceBedAssignmentHistorySerializer(device_assignments, many=True, context=self.context).data
+        results = []
+        for a in assignments:
+            results.append({
+                'device_id': str(a.device.id) if a.device else None,
+                'device_mac': a.device.mac_address if a.device and a.device.mac_address else "N/A",
+                'bed_number': a.bed.bed_number if a.bed else None,
+                'ward': a.ward.name if a.ward else None,
+                'floor': a.floor.name if a.floor else None,
+                'start_time': a.start_time,
+                'end_time': a.end_time,
+            })
+        return results
 
     def get_current_floor(self, obj):
-        active_assignment = obj.patient_bed_assignments.filter(end_time__isnull=True).first()
-        if active_assignment:
-            return active_assignment.bed.ward.floor.floor_number
-        return None
+        active = PatientDeviceBedAssignment.objects.filter(patient=obj, end_time__isnull=True).select_related('floor').first()
+        return active.floor.name if active and active.floor else None
 
     def get_current_ward(self, obj):
-        active_assignment = obj.patient_bed_assignments.filter(end_time__isnull=True).first()
-        if active_assignment:
-            return active_assignment.bed.ward.ward_number
-        return None
+        active = PatientDeviceBedAssignment.objects.filter(patient=obj, end_time__isnull=True).select_related('ward').first()
+        return active.ward.name if active and active.ward else None
 
     def get_current_bed(self, obj):
-        active_assignment = obj.patient_bed_assignments.filter(end_time__isnull=True).first()
-        if active_assignment:
-            return active_assignment.bed.bed_number
-        return None
+        active = PatientDeviceBedAssignment.objects.filter(patient=obj, end_time__isnull=True).select_related('bed').first()
+        return active.bed.bed_number if active and active.bed else None
+
+
+# ========== PATIENT LIST WITH LOCATION (For Quick Overviews) ==========
 
 class PatientListWithLocationSerializer(serializers.ModelSerializer):
     floor = serializers.SerializerMethodField()
     ward = serializers.SerializerMethodField()
     bed = serializers.SerializerMethodField()
+    active_devices = serializers.SerializerMethodField()
 
     class Meta:
         model = Patient
         fields = [
-            'id', 'name', 'age', 'gender', 'contact', 'admitted_at', 'discharged_at',
-            'floor', 'ward', 'bed'
+            'id', 'name', 'age', 'gender', 'contact',
+            'admitted_at', 'discharged_at',
+            'floor', 'ward', 'bed', 'active_devices'
         ]
 
     def get_floor(self, obj):
-        """Get the floor number from the active bed assignment."""
-        active_assignment = obj.patient_bed_assignments.filter(end_time__isnull=True).first()
-        if active_assignment:
-            return active_assignment.bed.ward.floor.floor_number
-        return None
+        active = (
+            PatientDeviceBedAssignment.objects
+            .filter(patient=obj, end_time__isnull=True)
+            .select_related('floor')
+            .first()
+        )
+        return active.floor.name if active and active.floor else None
 
     def get_ward(self, obj):
-        """Get the ward number from the active bed assignment."""
-        active_assignment = obj.patient_bed_assignments.filter(end_time__isnull=True).first()
-        if active_assignment:
-            return active_assignment.bed.ward.ward_number
-        return None
+        active = (
+            PatientDeviceBedAssignment.objects
+            .filter(patient=obj, end_time__isnull=True)
+            .select_related('ward')
+            .first()
+        )
+        return active.ward.name if active and active.ward else None
 
     def get_bed(self, obj):
-        """Get the bed number from the active bed assignment."""
-        active_assignment = obj.patient_bed_assignments.filter(end_time__isnull=True).first()
-        if active_assignment:
-            return active_assignment.bed.bed_number
-        return None
-    
+        active = (
+            PatientDeviceBedAssignment.objects
+            .filter(patient=obj, end_time__isnull=True)
+            .select_related('bed')
+            .first()
+        )
+        return active.bed.bed_number if active and active.bed else None
+
+    def get_active_devices(self, obj):
+        active_assignments = (
+            PatientDeviceBedAssignment.objects
+            .filter(patient=obj, end_time__isnull=True)
+            .select_related('device')
+        )
+
+        # Use safe null checks and UUID-based identifier
+        devices = []
+        for a in active_assignments:
+            if a.device:  # ✅ Only process if device exists
+                devices.append({
+                    'device_id': str(a.device.id),
+                    'device_mac': a.device.mac_address or "N/A",
+                    'type': a.device.type or "Unknown",
+                    'status': a.device.status,
+                })
+        return devices
+
+
+# ========== CREATE / DISCHARGE PATIENT SERIALIZERS ==========
 
 class CreatePatientSerializer(serializers.ModelSerializer):
+    """Serializer for creating a new patient."""
+
     class Meta:
         model = Patient
         fields = ['name', 'age', 'gender', 'contact', 'admitted_at']
 
+    def validate_contact(self, value):
+        if value and Patient.objects.filter(contact=value, is_active=True).exists():
+            raise serializers.ValidationError("A patient with this contact already exists.")
+        return value
+
+    def create(self, validated_data):
+        from django.utils import timezone
+        if not validated_data.get('admitted_at'):
+            validated_data['admitted_at'] = timezone.now()
+        validated_data['is_active'] = True  # Always mark as active when admitted
+        return Patient.objects.create(**validated_data)
+    
 class DischargePatientSerializer(serializers.ModelSerializer):
     class Meta:
         model = Patient

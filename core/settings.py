@@ -157,7 +157,7 @@ USE_TZ = True
 # --------------------------
 # Static files
 # --------------------------
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # --------------------------
@@ -321,6 +321,13 @@ TWILIO_AUTH_TOKEN = config('TWILIO_AUTH_TOKEN', default='')
 TWILIO_FROM_NUMBER = config('TWILIO_PHONE_NUMBER', default='')
 
 # --------------------------
+# Master OTP Bypass (dev/staging only)
+# --------------------------
+# These are ignored in production because the bypass gate checks DEBUG=False.
+MASTER_PHONE = config('MASTER_PHONE', default='')
+MASTER_OTP = config('MASTER_OTP', default='')
+
+# --------------------------
 # MQTT Client
 # --------------------------
 MQTT_BROKER = "1e578bacd37e4198a99e7a4a28756c6e.s1.eu.hivemq.cloud"
@@ -386,16 +393,26 @@ CELERY_TASK_QUEUES = {
 }
 
 CELERY_TASK_ROUTES = {
-    'sensor_app.tasks.process_alert': {'queue': 'high_priority'},
+    'notification_app.tasks.process_alert': {'queue': 'high_priority'},
     'sensor_app.tasks.process_sensor_batch': {'queue': 'celery'},
-    'sensor_app.tasks.send_alert_notification': {'queue': 'high_priority'},
+    'notification_app.tasks.send_alert_notification': {'queue': 'high_priority'},
 }
 
-# CELERY_BEAT_SCHEDULE = {
-#     "flush_daily_comment_usage_every_3_hours": {
-#         "task": "subscription_app.tasks.flush_daily_comment_usage",
-#         "schedule": crontab(minute=0, hour=0),  # every mid night
-#         "options": {"queue": "daily_usage_queue"},   # optional, specify queue
-#     },
-# }
+CELERY_BEAT_SCHEDULE = {
+    'check-device-connectivity-every-30-seconds': {
+        'task': 'sensor_app.tasks.check_device_connectivity',
+        'schedule': 30.0,
+    },
+    'retry-high-severity-notifications-every-5-minutes': {
+        'task': 'notification_app.tasks.retry_high_severity_notifications',
+        'schedule': 150.0, # 5 minutes
+    },
+}
 
+
+
+STATIC_ROOT = BASE_DIR / "staticfiles"
+
+STATICFILES_DIRS = [
+    BASE_DIR / "static"
+]
