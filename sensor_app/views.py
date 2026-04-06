@@ -1,4 +1,3 @@
-# sensor_app/views.py - OPTIMIZED VERSION
 import json
 import logging
 from rest_framework import viewsets, status
@@ -8,39 +7,45 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.views import APIView
 from rest_framework import authentication, permissions
 from rest_framework.permissions import IsAuthenticated
+from django.conf import settings
 from django.utils import timezone
 from datetime import timedelta
 from django.db.models import Prefetch
 from sensor_app.models import Device, FluidBag, PatientDeviceBedAssignment, SensorReading
 from django.shortcuts import get_object_or_404, render
 from sensor_app.mqtt_client import publish_message
-from sensor_app.serializers import DeviceWithCurrentAssignmentSerializer, FluidBagSerializer, PatientDeviceBedAssignmentSerializer, SensorReadingSerializer
+from sensor_app.serializers import (
+    DeviceWithCurrentAssignmentSerializer,
+    FluidBagSerializer,
+    PatientDeviceBedAssignmentSerializer,
+    SensorReadingSerializer,
+)
 from hospital_app.models import Patient, Bed, Ward
-from hospital_app.serializers import PatientSerializer 
+from hospital_app.serializers import PatientSerializer
 
 logger = logging.getLogger('django')
 
+# Protocol codes
+RES_NODE_ASSIGN = 201
 
 
 def sensor_dashboard(request):
     return render(request, 'sensor_monitor.html')
 
+
 @api_view(['GET'])
-def get_all_devices(request):    
+def get_all_devices(request):
     active_assignments = (
         PatientDeviceBedAssignment.objects
-        .filter(end_time__isnull=True, device__isnull=False)   # 👈 exclude device NULL
+        .filter(end_time__isnull=True, device__isnull=False)
         .select_related('patient', 'device', 'bed', 'ward', 'floor')
     )
-    
     serializer = PatientDeviceBedAssignmentSerializer(active_assignments, many=True)
     return Response(serializer.data)
 
+
 @api_view(['GET'])
 def get_patient_details_by_device(request, device_id):
-    """
-    Get patient details for the active assignment of the given device.
-    """
     assignment = PatientDeviceBedAssignment.objects.filter(
         device_id=device_id,
         end_time__isnull=True
@@ -53,13 +58,8 @@ def get_patient_details_by_device(request, device_id):
     return Response(serializer.data)
 
 
-
-
 @api_view(['GET'])
 def get_patient_assignment_history_by_device(request, device_id):
-    """
-    Get all assignment records (active + historical) for a given device.
-    """
     history = PatientDeviceBedAssignment.objects.filter(device_id=device_id)\
         .select_related('patient', 'device', 'bed', 'ward', 'floor')\
         .order_by('-start_time')
@@ -70,10 +70,6 @@ def get_patient_assignment_history_by_device(request, device_id):
 
 @api_view(['GET'])
 def get_device_assignment_history(request, device_id):
-    """
-    Return the assignment history (active + past) for the given device.
-    Uses the unified PatientDeviceBedAssignment model.
-    """
     device = get_object_or_404(Device, id=device_id)
 
     history = PatientDeviceBedAssignment.objects.filter(
@@ -88,29 +84,19 @@ def get_device_assignment_history(request, device_id):
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
-def get_sensor_history_view(request, device_id): # device_id is now the UUID
-    """
-    Get sensor reading history for a device identified by its UUID.
-    """
+def get_sensor_history_view(request, device_id):
     hours = int(request.GET.get('hours', 24))
     time_threshold = timezone.now() - timedelta(hours=hours)
 
     try:
-        # Find the device by its UUID (primary key)
-        # get_object_or_404 will automatically return 404 if not found
-        device = get_object_or_404(Device, id=device_id) # Use id instead of mac_address
+        device = get_object_or_404(Device, id=device_id)
     except Device.DoesNotExist:
-        # This case is handled by get_object_or_404, which raises Http404
-        # If you want custom error handling, you can remove get_object_or_404
-        # and handle the exception manually, but the default behavior is fine.
-        pass # get_object_or_404 handles this
+        pass
 
-    # Find sensor readings associated with the device's fluid bags
-    # This assumes SensorReading links to FluidBag, which links to Device
     readings = SensorReading.objects.filter(
-        fluid_bag__device=device, # Filter by the device linked via FluidBag
+        fluid_bag__device=device,
         timestamp__gte=time_threshold
-    ).values('reading', 'timestamp').order_by('timestamp') # Select only needed fields
+    ).values('reading', 'timestamp').order_by('timestamp')
 
     return Response(list(readings))
 
@@ -118,9 +104,6 @@ def get_sensor_history_view(request, device_id): # device_id is now the UUID
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def get_sensor_history(request, device_id):
-    """
-    Get sensor reading history for a given device (last N hours).
-    """
     hours = int(request.GET.get('hours', 24))
     start_time = timezone.now() - timedelta(hours=hours)
 
@@ -135,24 +118,64 @@ def get_sensor_history(request, device_id):
 
     serializer = SensorReadingSerializer(readings, many=True)
     return Response(serializer.data)
-    
+
 
 @api_view(['POST'])
 def register_node(request):
+    """
+    NEW FLOW:
+    1. Device already exists (created as 'unassigned' when code 200 arrived)
+    2. Find it by MAC, create FluidBag + Assignment
+    3. Send code 201 → Master → Node (so node stores the ID)
+    4. Node will reply with code 202, which triggers handle_node_confirm
+    """
     mac = request.data.get('mac')
     patient_id = request.data.get('patient_id')
-    bed_number = request.data.get('bed')
+    bed_id = request.data.get('bed_id')
     fluid_type = request.data.get('fluid_type')
     fluid_capacity = request.data.get('fluid_capacity')
 
-    if not all([mac, patient_id, bed_number, fluid_type, fluid_capacity]):
-        return Response({"error": "Missing required fields."}, status=400)
+    if not all([mac, patient_id, bed_id, fluid_type, fluid_capacity]):
+        missing = [
+            k for k, v in {
+                'mac': mac, 'patient_id': patient_id,
+                'bed_id': bed_id, 'fluid_type': fluid_type,
+                'fluid_capacity': fluid_capacity
+            }.items() if not v
+        ]
+        return Response(
+            {"error": f"Missing required fields: {', '.join(missing)}."},
+            status=400
+        )
+
+    # --- Find the unassigned device (created by code 200) ---
+    device = Device.objects.filter(mac_address=mac, status='unassigned').first()
+    if not device:
+        return Response(
+            {"error": f"No unassigned device found with MAC {mac}. "
+                      f"Make sure the node is powered on and in pairing mode."},
+            status=404
+        )
 
     patient = get_object_or_404(Patient, id=patient_id)
-    bed = get_object_or_404(Bed, bed_number=bed_number)
+    bed = get_object_or_404(Bed, id=bed_id)
     ward = bed.ward
     floor = ward.floor
 
+    # --- Close any old active assignments for this patient ---
+    old_assignments = PatientDeviceBedAssignment.objects.filter(
+        patient=patient,
+        end_time__isnull=True
+    ).exclude(bed=bed)
+
+    for old_ass in old_assignments:
+        old_ass.end_time = timezone.now()
+        old_ass.save()
+        if old_ass.bed:
+            old_ass.bed.is_occupied = False
+            old_ass.bed.save()
+
+    # --- Create assignment ---
     assignment, created = PatientDeviceBedAssignment.objects.get_or_create(
         patient=patient,
         bed=bed,
@@ -167,11 +190,7 @@ def register_node(request):
     bed.is_occupied = True
     bed.save()
 
-    device = Device.objects.create(
-        mac_address=mac,
-        type='node'
-    )
-
+    # --- Create fluid bag ---
     fluid_bag = FluidBag.objects.create(
         device=device,
         type=fluid_type,
@@ -181,18 +200,19 @@ def register_node(request):
     assignment.device = device
     assignment.save()
 
-    topic = 'be_project/test/in'
+    # --- Send code 201 → Master → Node ---
+    topic = getattr(settings, 'MQTT_TOPIC_MASTER_IN', 'be_project/master/in')
     payload = {
-        "request_code": 202,
+        "request_code": RES_NODE_ASSIGN,
         "mac": device.mac_address,
         "node_id": str(device.id)
     }
 
-    logger.info(f"📤 MQTT Payload Sent: {json.dumps(payload)}")
+    logger.info(f"📤 Sending code 201 to master for MAC {mac}, node_id {device.id}")
     publish_message(topic, payload)
 
     return Response({
-        "message": "Device registered and assigned successfully.",
+        "message": "Device assignment created. Node ID sent to device.",
         "node_id": str(device.id),
         "patient": patient.name,
         "bed": bed.bed_number if hasattr(bed, 'bed_number') else str(bed.id),

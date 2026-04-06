@@ -1,3 +1,4 @@
+# sensor_app/tasks.py
 import json
 import uuid
 import time
@@ -15,66 +16,66 @@ from django.utils import timezone
 
 from notification_app.models import Notification
 from notification_app.tasks import create_notification, send_notification_to_websocket
-from sensor_app.models import Device, FluidBag, SensorReading, PatientDeviceBedAssignment
+
+from sensor_app.models import (
+    Device,
+    FluidBag,
+    SensorReading,
+    PatientDeviceBedAssignment
+)
 from sensor_app.utils import parse_datetime
+from sensor_app.mqtt_client import publish_message
 
-# Redis connection
+
+# ============================================
+# GLOBALS & CONSTANTS
+# ============================================
+
 r = redis.Redis.from_url(settings.REDIS_URL)
-
-# Celery logger
 celery_logger = logging.getLogger('celery')
 
-# Cache key constants
 DEVICE_STATUS_CACHE_KEY = "device_status:{}"
 DEVICE_LAST_SEEN_CACHE_KEY = "device_last_seen:{}"
-OFFLINE_THRESHOLD_SECONDS = 120  # 2 minutes
+OFFLINE_THRESHOLD_SECONDS = 120
 
 QUEUE_KEY = "sensor_queue"
 LOCK_KEY = "sensor_batch_lock"
 DEBOUNCE_KEY = "sensor_batch_debounce"
-BATCH_SIZE = 1000  # Threshold to trigger immediate processing
-MAX_BATCH_PROCESS = 5000  # Maximum items to process per periodic run
+BATCH_SIZE = 1000
+MAX_BATCH_PROCESS = 5000
+
+# Protocol codes
+RES_NODE_ASSIGN = 201
+RES_ERASE_FLASH = 205
+
+# Pending-erase tracking
+ERASE_PENDING_PREFIX = "erase_pending:"
+ERASE_PENDING_TTL = 120
 
 
 # ============================================
-# HELPER FUNCTIONS
+# HELPER FUNCTIONS (defined once)
 # ============================================
 
 def acquire_lock(lock_key, timeout=15):
-    """Acquire a Redis lock"""
     return r.set(lock_key, "1", nx=True, ex=timeout)
 
 
 def release_lock(lock_key):
-    """Release a Redis lock"""
     r.delete(lock_key)
 
 
 def update_device_status(device_id):
-    """
-    Update device status in both cache and database.
-    Marks device as active/online.
-    """
     try:
-        # Update last_seen in database
-        Device.objects.filter(id=device_id).update(
-            last_seen=timezone.now()
-        )
-
-        # Update status in Redis cache to 'Activate'
+        Device.objects.filter(id=device_id).update(last_seen=timezone.now())
         cache_key_status = DEVICE_STATUS_CACHE_KEY.format(device_id)
         r.setex(cache_key_status, OFFLINE_THRESHOLD_SECONDS + 60, "Activate")
-
-        # Update last seen timestamp in Redis cache
         cache_key_last_seen = DEVICE_LAST_SEEN_CACHE_KEY.format(device_id)
         r.setex(cache_key_last_seen, OFFLINE_THRESHOLD_SECONDS + 60, int(time.time()))
-
-        # Update DB status to 'online' if it wasn't already
         device = Device.objects.get(id=device_id)
         if device.status != 'online':
             Device.objects.filter(id=device_id).update(status='online')
-            celery_logger.info(f"✅ Device {device_id} status updated to online")
-
+            celery_logger.info(f"✅ Device {device_id} status → online")
     except Device.DoesNotExist:
         celery_logger.warning(f"⚠️ Device {device_id} not found")
     except redis.RedisError as e:
@@ -84,27 +85,152 @@ def update_device_status(device_id):
 def send_sensor_data_to_websocket(sensor_payload):
     try:
         channel_layer = get_channel_layer()
-
         if channel_layer:
-            # Send to WebSocket group
             async_to_sync(channel_layer.group_send)(
                 "sensor_monitoring",
-                {
-                    "type": "handle_sensor_data_from_task",
-                    "sensor_data": sensor_payload
-                }
+                {"type": "handle_sensor_data_from_task", "sensor_data": sensor_payload}
             )
-            celery_logger.debug(f"📡 Sent WebSocket update for node {sensor_payload.get('nodeId')}")
-        else:
-            celery_logger.warning("⚠️ Channel layer is not available. Cannot send WebSocket message.")
-
     except Exception as e:
         celery_logger.error(f"❌ WebSocket send error: {e}", exc_info=True)
+
+
+def notify_frontend_device_refresh(device_id_str=None):
+    try:
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                "sensor_monitoring",
+                {"type": "refresh_devices", "device_id": device_id_str}
+            )
+    except Exception as e:
+        celery_logger.error(f"❌ WebSocket refresh error: {e}", exc_info=True)
+
+
+def save_single_reading_to_db(payload, node_id, timestamp):
+    fluid_bag = FluidBag.objects.filter(device_id=node_id).first()
+    if not fluid_bag:
+        celery_logger.warning(f"⚠️ FluidBag not found for device {node_id}")
+        return
+    reading_value = payload.get("reading")
+    if reading_value is None:
+        return
+    with transaction.atomic():
+        SensorReading.objects.create(
+            fluid_bag=fluid_bag,
+            reading=int(reading_value),
+            smoothed_weight=payload.get("smoothed_weight"),
+            timestamp=timestamp,
+            via=bool(payload.get("via")),
+            battery_percent=payload.get("battery_percent"),
+            repeater_mac=payload.get("repeater_mac"),
+            master_mac=payload.get("master_mac"),
+        )
+    celery_logger.info(f"✅ Fallback: Saved single reading for device {node_id}")
+
+
+def trigger_batch_task():
+    if not r.exists(DEBOUNCE_KEY):
+        r.set(DEBOUNCE_KEY, "1", ex=2)
+        celery_logger.info("🚀 Manually triggering batch task")
+        process_sensor_batch.delay()
+    else:
+        celery_logger.debug("⏸️ Batch task debounced")
+
+
+# ============================================
+# CODE 200 — Node ID Request
+# ============================================
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=2, queue="celery")
+def handle_node_register(self, payload):
+    mac_address = payload.get("mac")
+    if not mac_address:
+        celery_logger.error("❌ No MAC in node register payload")
+        return "NO_MAC"
+
+    try:
+        existing = Device.objects.filter(mac_address=mac_address).first()
+
+        if existing:
+            if existing.status == 'unassigned':
+                celery_logger.info(f"ℹ️ Device {existing.id} already unassigned, re-notifying frontend")
+            elif existing.status == 'completed':
+                device = Device.objects.create(
+                    mac_address=mac_address, type='node', status='unassigned'
+                )
+                celery_logger.info(f"🔄 Created new device {device.id} replacing completed one")
+            else:
+                celery_logger.warning(f"⚠️ Device {existing.id} status '{existing.status}', ignoring 200")
+                return "ALREADY_EXISTS"
+        else:
+            device = Device.objects.create(
+                mac_address=mac_address, type='node', status='unassigned'
+            )
+            celery_logger.info(f"✅ Created unassigned device {device.id} for MAC {mac_address}")
+
+        channel_layer = get_channel_layer()
+        if channel_layer:
+            async_to_sync(channel_layer.group_send)(
+                "sensor_monitoring",
+                {"type": "node_id_request", "mac": mac_address}
+            )
+            celery_logger.info(f"📤 Notified frontend about MAC {mac_address}")
+
+        return "SUCCESS"
+    except Exception as e:
+        celery_logger.error(f"❌ Error in handle_node_register: {e}", exc_info=True)
+        raise self.retry(exc=e)
+
+
+# ============================================
+# CODE 202 — Node Confirmed ID
+# ============================================
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=2, queue="celery")
+def handle_node_confirm(self, payload):
+    node_id_str = payload.get("node_id")
+    if not node_id_str:
+        celery_logger.error("❌ No node_id in confirm payload")
+        return "NO_NODE_ID"
+
+    try:
+        node_id = uuid.UUID(node_id_str)
+    except ValueError:
+        celery_logger.error(f"❌ Invalid node_id: {node_id_str}")
+        return "INVALID_NODE_ID"
+
+    try:
+        device = Device.objects.get(id=node_id)
+        if device.status == 'online':
+            celery_logger.info(f"ℹ️ Device {node_id} already online")
+            return "ALREADY_ONLINE"
+
+        Device.objects.filter(id=device.id).update(status='online', last_seen=timezone.now())
+
+        cache_key_status = DEVICE_STATUS_CACHE_KEY.format(device.id)
+        r.setex(cache_key_status, OFFLINE_THRESHOLD_SECONDS + 60, "Activate")
+        cache_key_last_seen = DEVICE_LAST_SEEN_CACHE_KEY.format(device.id)
+        r.setex(cache_key_last_seen, OFFLINE_THRESHOLD_SECONDS + 60, int(time.time()))
+
+        celery_logger.info(f"✅ Device {node_id} confirmed → online")
+        notify_frontend_device_refresh(node_id_str)
+        return "SUCCESS"
+
+    except Device.DoesNotExist:
+        celery_logger.warning(f"⚠️ Device {node_id} not found for confirmation")
+        return "NOT_FOUND"
+    except Exception as e:
+        celery_logger.error(f"❌ Error in handle_node_confirm: {e}", exc_info=True)
+        raise self.retry(exc=e)
+
+
+# ============================================
+# CODE 203 — Sensor Data
+# ============================================
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=2, queue="celery")
 def process_sensor_data(self, payload):
     node_id_str = payload.get('node_id')
-
     if not node_id_str:
         celery_logger.error(f"❌ No 'node_id' found in payload: {payload}")
         return "NO_NODE_ID"
@@ -115,12 +241,11 @@ def process_sensor_data(self, payload):
         celery_logger.error(f"❌ Invalid 'node_id' format: {node_id_str}")
         return "INVALID_NODE_ID"
 
-    # Update device status (last_seen, etc.)
     try:
         device = Device.objects.get(id=node_id)
         update_device_status(device.id)
     except Device.DoesNotExist:
-        celery_logger.warning(f"⚠️ Device with ID {node_id} not found in database. Message: {payload}")
+        celery_logger.warning(f"⚠️ Device with ID {node_id} not found. Message: {payload}")
         return "DEVICE_NOT_FOUND"
 
     reading_value = payload.get("reading")
@@ -143,11 +268,9 @@ def process_sensor_data(self, payload):
         r.lpush(QUEUE_KEY, json.dumps(payload))
         queue_len = r.llen(QUEUE_KEY)
         celery_logger.debug(f"📥 Added message to queue. Current queue length: {queue_len}")
-
         if queue_len >= BATCH_SIZE:
             celery_logger.info(f"🚀 Queue length ({queue_len}) reached threshold, triggering batch task")
             trigger_batch_task()
-
     except redis.RedisError as e:
         celery_logger.error(f"❌ Redis error adding to queue: {e}")
         try:
@@ -157,31 +280,6 @@ def process_sensor_data(self, payload):
             raise
 
     return "SUCCESS"
-
-
-def save_single_reading_to_db(payload, node_id, timestamp):
-  
-    fluid_bag = FluidBag.objects.filter(device_id=node_id).first()
-    if not fluid_bag:
-        celery_logger.warning(f"⚠️ FluidBag not found for device {node_id}")
-        return
-
-    reading_value = payload.get("reading")
-    if reading_value is None:
-        return
-
-    with transaction.atomic():
-        SensorReading.objects.create(
-            fluid_bag=fluid_bag,
-            reading=int(reading_value),
-            smoothed_weight=payload.get("smoothed_weight"),
-            timestamp=timestamp,
-            via=bool(payload.get("via")),
-            battery_percent=payload.get("battery_percent"),
-            repeater_mac=payload.get("repeater_mac"),
-            master_mac=payload.get("master_mac"),
-        )
-    celery_logger.info(f"✅ Fallback: Saved single reading for device {node_id}")
 
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=5, queue="celery")
@@ -278,25 +376,21 @@ def process_sensor_batch(self):
                     )
                 )
 
-                # --- Check for Low Fluid Level Threshold (use smoothed if available) ---
                 alert_value = msg.get("smoothed_weight") or int(reading_value)
                 if fluid_bag.threshold_low and alert_value <= fluid_bag.threshold_low:
-                        # Only create a notification if one doesn't exist for this device in the last 30 mins
-                        recent_notif = Notification.objects.filter(
+                    recent_notif = Notification.objects.filter(
+                        device=device,
+                        notification_type='warning',
+                        created_at__gte=timezone.now() - timedelta(minutes=30)
+                    ).exists()
+                    if not recent_notif:
+                        create_notification(
                             device=device,
-                            notification_type='warning',
-                            created_at__gte=timezone.now() - timedelta(minutes=30)
-                        ).exists()
-                        
-                        if not recent_notif:
-                            create_notification(
-                                device=device,
-                                title="IV Bottle Low",
-                                message=f"Fluid level for patient {fluid_bag.device.current_assignment.patient.name if fluid_bag.device.current_assignment and fluid_bag.device.current_assignment.patient else 'Unknown'} is at {reading_value}%.",
-                                n_type='warning',
-                                severity='med'
-                            )
-
+                            title="IV Bottle Low",
+                            message=f"Fluid level for patient {fluid_bag.device.current_bed_assignment.patient.name if fluid_bag.device.current_bed_assignment and fluid_bag.device.current_bed_assignment.patient else 'Unknown'} is at {reading_value}%.",
+                            n_type='warning',
+                            severity='med'
+                        )
 
             except Exception as msg_error:
                 celery_logger.error(f"❌ Error processing message {msg}: {msg_error}")
@@ -314,7 +408,7 @@ def process_sensor_batch(self):
                 celery_logger.error(f"❌ DB Error during bulk insert: {db_err}")
                 for msg in batch:
                     r.lpush(QUEUE_KEY, json.dumps(msg))
-                raise  # triggers Celery retry
+                raise
         else:
             celery_logger.warning(f"⚠️ No valid readings to insert ({errors} errors)")
             return f"NO_VALID_READINGS: {errors} errors"
@@ -322,25 +416,124 @@ def process_sensor_batch(self):
     except DatabaseError as db_err:
         celery_logger.error(f"❌ DB Error during batch processing: {db_err}")
         self.retry(exc=db_err)
-
     except Exception as e:
         celery_logger.error(f"❌ Unexpected error in batch processing: {e}", exc_info=True)
         return f"ERROR: {str(e)}"
-
     finally:
         release_lock(LOCK_KEY)
 
 
-def trigger_batch_task():
-    if not r.exists(DEBOUNCE_KEY):
-        r.set(DEBOUNCE_KEY, "1", ex=2)  # Debounce for 2 seconds
-        celery_logger.info("🚀 Manually triggering batch task")
-        process_sensor_batch.delay()
-    else:
-        celery_logger.debug("⏸️ Batch task debounced")
+# ============================================
+# CODE 204 — Task Complete Request (from Node)
+# ============================================
+
+@shared_task(bind=True, max_retries=3, default_retry_delay=5, queue="celery")
+def handle_task_complete_request(self, payload):
+    node_id_str = payload.get("node_id")
+    mac_address = payload.get("mac")
+
+    if not node_id_str or not mac_address:
+        celery_logger.error(f"❌ Missing fields in 204 payload: {payload}")
+        return "MISSING_FIELDS"
+
+    try:
+        node_id = uuid.UUID(node_id_str)
+    except ValueError:
+        celery_logger.error(f"❌ Invalid node_id in 204: {node_id_str}")
+        return "INVALID_NODE_ID"
+
+    try:
+        device = Device.objects.get(id=node_id)
+    except Device.DoesNotExist:
+        celery_logger.warning(f"⚠️ Device {node_id} not found for task complete")
+        return "NOT_FOUND"
+
+    # Store pending erase state in Redis so code 206 can find it
+    pending_data = json.dumps({
+        "node_id": node_id_str,
+        "mac": mac_address,
+        "timestamp": timezone.now().isoformat()
+    })
+    r.setex(f"{ERASE_PENDING_PREFIX}{node_id}", ERASE_PENDING_TTL, pending_data)
+    celery_logger.info(f"📌 Stored erase-pending for {node_id}")
+
+    # Send code 205 → Master → Node (erase flash)
+    topic_master_in = getattr(settings, 'MQTT_TOPIC_MASTER_IN', 'be_project/master/in')
+    publish_message(topic_master_in, {
+        "request_code": RES_ERASE_FLASH,
+        "mac": mac_address,
+        "node_id": node_id_str
+    })
+
+    celery_logger.info(f"📡 Sent 205 (erase flash) for {node_id} → {mac_address}")
+    return "ERASE_INSTRUCTED"
 
 
+# ============================================
+# CODE 206 — Erase Confirmed (from Node)
+# ============================================
 
+@shared_task(bind=True, max_retries=3, default_retry_delay=2, queue="celery")
+def handle_erase_confirm(self, payload):
+    mac_address = payload.get("mac")
+    if not mac_address:
+        celery_logger.error("❌ No MAC in erase confirm payload")
+        return "NO_MAC"
+
+    try:
+        device = Device.objects.filter(mac_address=mac_address).first()
+        if not device:
+            celery_logger.warning(f"⚠️ No device found for MAC {mac_address}")
+            return "NOT_FOUND"
+
+        # Verify there's a pending erase in Redis
+        pending_key = f"{ERASE_PENDING_PREFIX}{device.id}"
+        pending_bytes = r.get(pending_key)
+
+        if not pending_bytes:
+            celery_logger.warning(f"⚠️ No erase-pending for {device.id}, ignoring 206")
+            return "NO_PENDING"
+
+        # Delete the pending key
+        r.delete(pending_key)
+
+        # Now run the EXISTING completion logic
+        node_id_str = str(device.id)
+
+        Device.objects.filter(id=device.id).update(status='completed')
+
+        assignment = PatientDeviceBedAssignment.objects.filter(
+            device=device, end_time__isnull=True
+        ).first()
+        if assignment:
+            assignment.end_time = timezone.now()
+            assignment.save()
+            if assignment.bed:
+                assignment.bed.is_occupied = False
+                assignment.bed.save(update_fields=['is_occupied'])
+
+        cache_key_status = DEVICE_STATUS_CACHE_KEY.format(device.id)
+        r.setex(cache_key_status, 600, "Task_Completed")
+
+        celery_logger.info(f"✅ Device {device.id} marked completed after erase confirmed")
+
+        send_sensor_data_to_websocket({
+            'nodeId': node_id_str,
+            'status': 'Task_Completed',
+            'timestamp': timezone.now().isoformat()
+        })
+
+        notify_frontend_device_refresh(node_id_str)
+        return "COMPLETED"
+
+    except Exception as e:
+        celery_logger.error(f"❌ Error in handle_erase_confirm: {e}", exc_info=True)
+        raise self.retry(exc=e)
+
+
+# ============================================
+# EXISTING: process_task_completion (kept for backward compat / API use)
+# ============================================
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=5, queue="celery")
 def process_task_completion(self, payload):
@@ -352,15 +545,12 @@ def process_task_completion(self, payload):
     try:
         node_id = uuid.UUID(node_id_str)
     except ValueError:
-        celery_logger.error(f"❌ Invalid 'node_id' format in task completion payload: {node_id_str}")
+        celery_logger.error(f"❌ Invalid 'node_id' format: {node_id_str}")
         return "INVALID_NODE_ID"
 
     try:
         device = Device.objects.get(id=node_id)
-
-        Device.objects.filter(id=device.id).update(
-            status='completed'
-        )
+        Device.objects.filter(id=device.id).update(status='completed')
 
         assignment = PatientDeviceBedAssignment.objects.filter(device=device, end_time__isnull=True).first()
         if assignment:
@@ -373,7 +563,7 @@ def process_task_completion(self, payload):
         cache_key_status = DEVICE_STATUS_CACHE_KEY.format(device.id)
         r.setex(cache_key_status, 600, "Task_Completed")
 
-        celery_logger.info(f"✅ Device {device.id} marked as task-completed (stop_at set, status=False)")
+        celery_logger.info(f"✅ Device {device.id} marked as task-completed")
 
         send_sensor_data_to_websocket({
             'nodeId': node_id_str,
@@ -390,6 +580,10 @@ def process_task_completion(self, payload):
     return "TASK_COMPLETED"
 
 
+# ============================================
+# EXISTING: process_disconnect
+# ============================================
+
 @shared_task(bind=True, max_retries=3, default_retry_delay=5, queue="celery")
 def process_disconnect(self, payload):
     node_id_str = payload.get('node_id')
@@ -403,10 +597,7 @@ def process_disconnect(self, payload):
         return "INVALID_NODE_ID"
     try:
         device = Device.objects.get(id=node_id)
-
-        Device.objects.filter(id=device.id).update(
-            status='offline'
-        )
+        Device.objects.filter(id=device.id).update(status='offline')
 
         assignment = PatientDeviceBedAssignment.objects.filter(device=device, end_time__isnull=True).first()
         if assignment:
@@ -419,7 +610,7 @@ def process_disconnect(self, payload):
         cache_key_status = DEVICE_STATUS_CACHE_KEY.format(device.id)
         r.setex(cache_key_status, 600, "Offline")
 
-        celery_logger.info(f"✅ Device {device.id} marked as disconnected (stop_at set, status=False)")
+        celery_logger.info(f"✅ Device {device.id} marked as disconnected")
 
         send_sensor_data_to_websocket({
             'nodeId': node_id_str,
@@ -436,43 +627,32 @@ def process_disconnect(self, payload):
     return "DISCONNECTED"
 
 
+# ============================================
+# EXISTING: check_device_connectivity
+# ============================================
+
 @shared_task(queue="celery")
 def check_device_connectivity():
     celery_logger.info("🔍 Starting connectivity check task...")
     threshold_time = int(time.time()) - OFFLINE_THRESHOLD_SECONDS
 
-    active_not_stopped_devices = Device.objects.filter(
-        status='online'
-    ).values_list('id', flat=True)
-
+    active_devices = Device.objects.filter(status='online').values_list('id', flat=True)
     offline_devices_count = 0
 
-    for device_id in active_not_stopped_devices:
+    for device_id in active_devices:
         cache_key_last_seen = DEVICE_LAST_SEEN_CACHE_KEY.format(device_id)
         try:
             last_seen_bytes = r.get(cache_key_last_seen)
-            
+
             if last_seen_bytes:
                 last_seen_timestamp = int(last_seen_bytes)
-                
                 if last_seen_timestamp < threshold_time:
-                    # Device is offline due to inactivity
-                    Device.objects.filter(
-                        id=device_id,
-                        status='online'
-                    ).update(status='offline')
-
-                    # Update Redis status cache to 'Offline'
+                    Device.objects.filter(id=device_id, status='online').update(status='offline')
                     cache_key_status = DEVICE_STATUS_CACHE_KEY.format(device_id)
                     r.setex(cache_key_status, 600, "Offline")
-
-                    celery_logger.info(
-                        f"⚠️ Device {device_id} marked as offline "
-                        f"(last seen {last_seen_timestamp}, threshold {threshold_time})"
-                    )
+                    celery_logger.info(f"⚠️ Device {device_id} offline (inactivity)")
                     offline_devices_count += 1
 
-                    # Create Notification
                     create_notification(
                         device=Device.objects.get(id=device_id),
                         title="Device Offline",
@@ -481,7 +661,6 @@ def check_device_connectivity():
                         severity='high'
                     )
 
-                    # Send WebSocket notification about offline status
                     send_sensor_data_to_websocket({
                         'nodeId': str(device_id),
                         'status': 'Offline',
@@ -489,17 +668,7 @@ def check_device_connectivity():
                         'timestamp': timezone.now().isoformat()
                     })
             else:
-                # No last seen timestamp in cache for an active device
-                celery_logger.warning(
-                    f"⚠️ Device {device_id} has no last_seen timestamp in cache "
-                    f"but DB status is True. Marking offline..."
-                )
-
-                Device.objects.filter(
-                    id=device_id,
-                    status='online'
-                ).update(status='offline')
-
+                Device.objects.filter(id=device_id, status='online').update(status='offline')
                 cache_key_status = DEVICE_STATUS_CACHE_KEY.format(device_id)
                 r.setex(cache_key_status, 600, "Offline")
                 offline_devices_count += 1
@@ -509,8 +678,4 @@ def check_device_connectivity():
         except redis.RedisError as e:
             celery_logger.error(f"❌ Redis error checking device {device_id}: {e}")
 
-    celery_logger.info(
-        f"✅ Connectivity check completed. "
-        f"{offline_devices_count} devices marked as offline due to inactivity."
-    )
-
+    celery_logger.info(f"✅ Connectivity check completed. {offline_devices_count} devices marked offline.")

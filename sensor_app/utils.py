@@ -1,17 +1,8 @@
 import logging
-from django.utils import timezone
 from datetime import datetime, timezone as dt_timezone
-from sensor_app.models import Device, FluidBag, SensorReading
-from asgiref.sync import async_to_sync
-from channels.layers import get_channel_layer
-from django.core.cache import cache
-
-CACHE_TIMEOUT = 60 * 10 
 
 mqtt_logger = logging.getLogger('mqtt')
 django_logger = logging.getLogger('django')
-
-
 
 
 def parse_datetime(datetime_str):
@@ -25,7 +16,7 @@ def parse_datetime(datetime_str):
         "%b %d, %Y, %I:%M:%S %p",   # Variant (no dot)
         "%Y-%m-%dT%H:%M:%S",        # ISO fallback
     ]
-    
+
     for fmt in possible_formats:
         try:
             parsed = datetime.strptime(datetime_str, fmt)
@@ -36,27 +27,3 @@ def parse_datetime(datetime_str):
             continue
 
     raise ValueError(f"Unsupported datetime format: {datetime_str}")
-
-
-def handle_node_id_request(self, topic, payload):
-    """Handles Node ID request and forwards only MAC to WebSocket"""
-    try:
-        mac_address = payload.get("mac")
-        if not mac_address:
-            mqtt_logger.warning(f"⚠️ No MAC address found in payload: {payload}")
-            return
-
-        mqtt_logger.info(f"📨 Node ID request received from MAC: {mac_address}")
-
-        async_to_sync(self.channel_layer.group_send)(
-            "sensor_monitoring",
-            {
-                "type": "node_id_request",
-                "mac": mac_address,
-            }
-        )
-
-        mqtt_logger.info(f"📤 Node ID request (MAC: {mac_address}) forwarded to WebSocket")
-
-    except Exception as e:
-        mqtt_logger.error(f"❌ Failed to handle Node ID request: {e}", exc_info=True)

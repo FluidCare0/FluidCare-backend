@@ -3,8 +3,10 @@ import json
 import logging
 from channels.generic.websocket import AsyncWebsocketConsumer
 from django.conf import settings
+# ★ ADDED: Import Django's JSON encoder to handle UUIDs gracefully
+from django.core.serializers.json import DjangoJSONEncoder 
 import redis
-from asgiref.sync import async_to_sync, sync_to_async
+from asgiref.sync import sync_to_async
 from channels.layers import get_channel_layer
 from sensor_app.models import PatientDeviceBedAssignment
 from hospital_app.models import Patient, Floor
@@ -13,6 +15,7 @@ from hospital_app.serializers import PatientListWithLocationSerializer, FloorSer
 
 logger = logging.getLogger(__name__)
 
+
 class SensorConsumer(AsyncWebsocketConsumer):
     DEVICE_STATUS_CACHE_KEY = "device_status:{}"
 
@@ -20,15 +23,24 @@ class SensorConsumer(AsyncWebsocketConsumer):
         self.room_group_name = 'sensor_monitoring'
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
         await self.accept()
-        await self.send(text_data=json.dumps({'type': 'connection_established', 'message': 'Connected'}))
-        logger.info(f"WebSocket connected to {self.room_group_name}")
         
+        # ★ FIXED: Added cls=DjangoJSONEncoder
+        await self.send(text_data=json.dumps({
+            'type': 'connection_established',
+            'message': 'Connected'
+        }, cls=DjangoJSONEncoder))
+        
+        logger.info(f"WebSocket connected to {self.room_group_name}")
+
         # Send initial data
         initial_data = await self.get_initial_data()
+        
+        # ★ FIXED: Added cls=DjangoJSONEncoder
         await self.send(text_data=json.dumps({
             'type': 'initial_data',
             'data': initial_data
-        }))
+        }, cls=DjangoJSONEncoder))
+        
         logger.info("Sent initial data to WebSocket")
 
     @sync_to_async
@@ -45,9 +57,6 @@ class SensorConsumer(AsyncWebsocketConsumer):
         patients = Patient.objects.filter(
             discharged_at__isnull=True
         ).prefetch_related('assignments__bed__ward__floor')
-        # Filter for patients who have an active assignment (equivalent to p.floor && p.ward && p.bed in frontend)
-        # However, the frontend might want all admitted patients for the selection modal.
-        # Let's send all non-discharged patients.
         patients_data = PatientListWithLocationSerializer(patients, many=True).data
 
         # 3. Hospital Structure
@@ -71,30 +80,39 @@ class SensorConsumer(AsyncWebsocketConsumer):
         except json.JSONDecodeError:
             logger.error(f"Invalid JSON: {text_data}")
 
+    # ---- Existing: Sensor data with cached status ----
     async def sensor_message(self, event):
-        # The message here is the one prepared by the consumer itself after fetching status
-        message_to_send = event['message'] # e.g., {'type': 'sensor_data', 'message': {..., 'status': '...'}}
-
-        # Send the message directly
-        await self.send(text_data=json.dumps(message_to_send))
+        message_to_send = event['message']
+        # ★ FIXED: Added cls=DjangoJSONEncoder
+        await self.send(text_data=json.dumps(message_to_send, cls=DjangoJSONEncoder))
         logger.debug(f"Sent to WebSocket: {message_to_send}")
 
+    # ---- Existing: Node ID request (code 200 → frontend) ----
     async def node_id_request(self, event):
         mac_address = event.get("mac")
-
         if not mac_address:
             logger.warning(f"No MAC found in node_id_request event: {event}")
             return
-
         message = {
             "type": "node_id_request",
             "mac": mac_address,
         }
-
-        # Send directly to frontend WebSocket
-        await self.send(text_data=json.dumps(message))
+        # ★ FIXED: Added cls=DjangoJSONEncoder
+        await self.send(text_data=json.dumps(message, cls=DjangoJSONEncoder))
         logger.info(f"📤 Sent Node ID request MAC to WebSocket: {mac_address}")
 
+    # ---- NEW: Device list refresh trigger ----
+    async def refresh_devices(self, event):
+        device_id = event.get("device_id")
+        message = {
+            "type": "refresh_devices",
+            "device_id": device_id,
+        }
+        # ★ FIXED: Added cls=DjangoJSONEncoder
+        await self.send(text_data=json.dumps(message, cls=DjangoJSONEncoder))
+        logger.info(f"📤 Sent refresh_devices to WebSocket for {device_id}")
+
+    # ---- Existing: Handle sensor data from task ----
     async def handle_sensor_data_from_task(self, event):
         raw_sensor_data = event.get('sensor_data')
         if not raw_sensor_data:
@@ -116,40 +134,43 @@ class SensorConsumer(AsyncWebsocketConsumer):
             logger.debug(f"Fetched cached status for {device_identifier}: {cached_status}")
         except redis.RedisError as e:
             logger.error(f"Error fetching status from Redis for {device_identifier}: {e}")
-            cached_status = 'Offline' 
+            cached_status = 'Offline'
         finally:
-            redis_client.close() 
+            redis_client.close()
 
         final_message_for_websocket = {
             'type': 'sensor_data',
             'message': {
-                **raw_sensor_data, 
-                'status': cached_status 
+                **raw_sensor_data,
+                'status': cached_status
             }
         }
 
         logger.debug(f"Prepared final message for WebSocket (with status): {final_message_for_websocket}")
 
         await self.channel_layer.group_send(
-            self.room_group_name, 
+            self.room_group_name,
             {
-                'type': 'sensor_message', 
+                'type': 'sensor_message',
                 'message': final_message_for_websocket
             }
         )
         logger.info(f"Broadcasted final sensor data with status via channel layer for device {device_identifier}")
 
+    # ---- Existing: Notification dispatch ----
     async def handle_notification(self, event):
         notification_data = event.get('notification')
         if notification_data:
+            # ★ FIXED: Added cls=DjangoJSONEncoder
             await self.send(text_data=json.dumps({
                 'type': 'new_notification',
                 'notification': notification_data
-            }))
+            }, cls=DjangoJSONEncoder))
             logger.info(f"🔔 Dispatched new notification to WebSocket: {notification_data.get('title')}")
 
     async def refresh_notifications(self, event):
+        # ★ FIXED: Added cls=DjangoJSONEncoder
         await self.send(text_data=json.dumps({
             'type': 'refresh_notifications'
-        }))
+        }, cls=DjangoJSONEncoder))
         logger.info("🔄 Dispatched refresh_notifications to WebSocket")

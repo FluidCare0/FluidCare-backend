@@ -13,6 +13,7 @@ class Device(models.Model):
         ('master', 'Master')
     ]
     STATUS_CHOICES = [
+        ('unassigned', 'Unassigned'),
         ('online', 'Online'),
         ('offline', 'Offline'),
         ('completed', 'Task Completed'),

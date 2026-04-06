@@ -336,7 +336,21 @@ MQTT_USERNAME = "kanbs"    # leave empty for public broker
 MQTT_PASSWORD = "Kartik@3165" 
 MQTT_PORT = 8883
 MQTT_TOPIC = 'be_project/#'
-MQTT_TASK_COMPLETE_TOPIC = 'be_project/task_complete/#'
+
+# ====== MQTT Topics (add to your existing settings) ======
+
+# Backend → Master → Node  (master subscribes to this)
+MQTT_TOPIC_MASTER_IN = 'be_project/master/in'
+
+# Master → Backend  (backend subscribes to these)
+MQTT_TOPIC_NODE_REGISTER = 'be_project/node/register'          # Code 200
+MQTT_TOPIC_NODE_CONFIRM_ID = 'be_project/node/confirm_id'      # Code 202
+MQTT_TOPIC_NODE_DATA = 'be_project/node/data'                   # Code 203
+MQTT_TOPIC_NODE_TASK_COMPLETE = 'be_project/node/task_complete' # Code 204
+MQTT_TOPIC_NODE_ERASE_CONFIRM = 'be_project/node/erase_confirm' # Code 206
+MQTT_TOPIC_DISCONNECT = 'be_project/disconnect'                 # Existing
+
+# Keep your existing MQTT_BROKER, MQTT_PORT, MQTT_CLIENT_ID, etc.
 
 # # --------------------------
 # # Email

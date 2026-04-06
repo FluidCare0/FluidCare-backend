@@ -1,17 +1,15 @@
 # sensor_app/mqtt_client.py
-import json 
+import json
 import logging
 import os
 import paho.mqtt.client as mqtt
 from django.conf import settings
 from django.utils import timezone
-from datetime import datetime
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 import redis
 from sensor_app.models import Device, FluidBag, SensorReading
-from sensor_app.tasks import trigger_batch_task, process_sensor_data, process_task_completion, process_disconnect
-from sensor_app.utils import handle_node_id_request
+from sensor_app.utils import parse_datetime
 import ssl
 
 r = redis.Redis.from_url(settings.REDIS_URL)
@@ -22,10 +20,19 @@ BATCH_SIZE = 1000
 CACHE_TIMEOUT = 60 * 50
 
 # Signal-processing constants
-SPIKE_THRESHOLD_G = 80   # g – reject if |raw - last_raw| exceeds this
-EWMA_ALPHA = 0.2         # smoothing factor for exponentially weighted moving average
+EWMA_ALPHA = 0.2
+
+# Protocol request codes
+REQ_NODE_ID       = 200
+RES_NODE_ASSIGN   = 201
+RES_NODE_CONFIRM  = 202
+REQ_SENSOR_DATA   = 203
+REQ_TASK_COMPLETE = 204
+RES_ERASE_FLASH   = 205
+RES_ERASE_CONFIRM = 206
 
 mqtt_logger = logging.getLogger('mqtt')
+
 
 class MQTTClient:
     def __init__(self):
@@ -49,108 +56,144 @@ class MQTTClient:
     def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             mqtt_logger.info('Mqtt broker connected')
-            client.subscribe(settings.MQTT_TOPIC, qos=1)
-            task_complete_topic = settings.MQTT_TASK_COMPLETE_TOPIC 
-            if task_complete_topic:
-                client.subscribe(task_complete_topic, qos=1)
-                mqtt_logger.info(f'Subscribed to task completion topic: {task_complete_topic}')
+
+            topics = [
+                (getattr(settings, 'MQTT_TOPIC_NODE_REGISTER', 'be_project/node/register'), 1),
+                (getattr(settings, 'MQTT_TOPIC_NODE_CONFIRM_ID', 'be_project/node/confirm_id'), 1),
+                (getattr(settings, 'MQTT_TOPIC_NODE_DATA', 'be_project/node/data'), 1),
+                (getattr(settings, 'MQTT_TOPIC_NODE_TASK_COMPLETE', 'be_project/node/task_complete'), 1),
+                (getattr(settings, 'MQTT_TOPIC_NODE_ERASE_CONFIRM', 'be_project/node/erase_confirm'), 1),
+                (getattr(settings, 'MQTT_TOPIC_DISCONNECT', 'be_project/disconnect'), 1),
+            ]
+            for topic, qos in topics:
+                client.subscribe(topic, qos=qos)
+                mqtt_logger.info(f'📬 Subscribed to {topic}')
         else:
             mqtt_logger.error(f'Failed to connect, return code {rc}')
 
     def on_disconnect(self, client, userdata, rc):
         if rc != 0:
-            mqtt_logger.warning("Unexpected MQTT disconnection. Reconnecting...")  
+            mqtt_logger.warning("Unexpected MQTT disconnection. Reconnecting...")
 
     def on_message(self, client, userdata, msg):
+        # ==============================================
+        # DEFERRED IMPORTS — prevents circular import
+        # mqtt_client.py <-> tasks.py
+        # ==============================================
+        from sensor_app.tasks import (
+            process_sensor_data,
+            handle_node_register,
+            handle_node_confirm,
+            handle_task_complete_request,
+            handle_erase_confirm,
+            process_disconnect,
+        )
+
         try:
             topic = msg.topic
             payload = json.loads(msg.payload.decode())
-            mqtt_logger.info(f"📨 Received message on topic '{topic}")
 
-            if 'be_project/node/data' in topic and 'be_project/task_complete' not in topic and 'be_project/disconnect' not in topic:
-                node_id = payload.get('node_id')
-                if node_id:
-                    raw = int(payload.get('reading', 0))
+            topic_register      = getattr(settings, 'MQTT_TOPIC_NODE_REGISTER', 'be_project/node/register')
+            topic_confirm_id    = getattr(settings, 'MQTT_TOPIC_NODE_CONFIRM_ID', 'be_project/node/confirm_id')
+            topic_data          = getattr(settings, 'MQTT_TOPIC_NODE_DATA', 'be_project/node/data')
+            topic_task_complete = getattr(settings, 'MQTT_TOPIC_NODE_TASK_COMPLETE', 'be_project/node/task_complete')
+            topic_erase_confirm = getattr(settings, 'MQTT_TOPIC_NODE_ERASE_CONFIRM', 'be_project/node/erase_confirm')
+            topic_disconnect    = getattr(settings, 'MQTT_TOPIC_DISCONNECT', 'be_project/disconnect')
 
-                    # --- Spike rejection ---
-                    spike_key = f"last_raw:{node_id}"
-                    last_raw_bytes = r.get(spike_key)
-                    if last_raw_bytes is not None:
-                        last_raw = float(last_raw_bytes)
-                        if abs(raw - last_raw) > SPIKE_THRESHOLD_G:
-                            mqtt_logger.warning(
-                                f"⚠️ Spike rejected for {node_id}: "
-                                f"|{raw} - {last_raw:.1f}| > {SPIKE_THRESHOLD_G}g"
-                            )
-                            return
-                    r.setex(spike_key, CACHE_TIMEOUT, raw)
+            # ---- Code 200: Node ID request ----
+            if topic == topic_register:
+                mqtt_logger.info(f"📨 Code 200 (Node ID request) from {payload.get('mac')}")
+                handle_node_register.delay(payload)
 
-                    # --- EWMA smoothing ---
-                    ewma_key = f"ewma_weight:{node_id}"
-                    prev_ewma_bytes = r.get(ewma_key)
-                    if prev_ewma_bytes is not None:
-                        prev_ewma = float(prev_ewma_bytes)
-                        smoothed = EWMA_ALPHA * raw + (1.0 - EWMA_ALPHA) * prev_ewma
-                    else:
-                        smoothed = float(raw)
-                    r.setex(ewma_key, CACHE_TIMEOUT, smoothed)
+            # ---- Code 202: Node confirmed Node ID ----
+            elif topic == topic_confirm_id:
+                mqtt_logger.info(f"📨 Code 202 (Node ID confirmed) id={payload.get('node_id')}")
+                handle_node_confirm.delay(payload)
 
-                    payload['smoothed_weight'] = smoothed
+            # ---- Code 203: Sensor data ----
+            elif topic == topic_data:
+                self._handle_sensor_data(payload)
 
-                    mqtt_logger.info(f"📡 Sending real-time WebSocket update for node {node_id}")
-                    try:
-                        cache_key_status = f"device_status:{node_id}"
-                        status_bytes = r.get(cache_key_status)
-                        status = status_bytes.decode('utf-8') if status_bytes else 'Activate'
-                    except Exception:
-                        status = 'Activate'
+            # ---- Code 204: Task complete request ----
+            elif topic == topic_task_complete:
+                mqtt_logger.info(f"🔄 Code 204 (Task complete) id={payload.get('node_id')}")
+                handle_task_complete_request.delay(payload)
 
-                    ws_message = {
-                        'nodeId': node_id,
-                        'nodeMac': payload.get('node_mac'),
-                        'level': raw,
-                        'smoothedWeight': round(smoothed, 2),
-                        'batteryPercent': payload.get('battery_percent'),
-                        'timestamp': payload.get('datetime', timezone.now().isoformat()),
-                        'status': status,
-                        'via': bool(payload.get('via')),
-                        'repeaterMac': payload.get('repeater_mac'),
-                        'masterMac': payload.get('master_mac'),
-                    }
+            # ---- Code 206: Erase confirmed ----
+            elif topic == topic_erase_confirm:
+                mqtt_logger.info(f"🔄 Code 206 (Erase confirmed) mac={payload.get('mac')}")
+                handle_erase_confirm.delay(payload)
 
-                    if self.channel_layer:
-                        async_to_sync(self.channel_layer.group_send)(
-                            "sensor_monitoring",
-                            {
-                                "type": "handle_sensor_data_from_task",
-                                "sensor_data": ws_message
-                            }
-                        )
+            # ---- Disconnect (existing logic) ----
+            elif topic == topic_disconnect:
+                mqtt_logger.info(f"📡 Disconnect from {payload.get('node_id')}")
+                process_disconnect.delay(payload)
 
-                result = process_sensor_data.delay(payload) # type: ignore
-                mqtt_logger.info(f"✅ Sensor processing task queued with ID: {result.id} for topic {topic}")
+            else:
+                mqtt_logger.warning(f"⚠️ Unknown topic: {topic}")
 
-            elif 'be_project/task_complete' in topic: 
-                result = process_task_completion.delay(payload) # type: ignore
-                mqtt_logger.info(f"✅ Task completion processing task queued with ID: {result.id} for topic {topic}")
-
-            elif 'be_project/disconnect' in topic: 
-                result = process_disconnect.delay(payload) # type: ignore
-                mqtt_logger.info(f"✅ Disconnect processing task queued with ID: {result.id} for topic {topic}")
-
-            elif 'be_project/node/request/id' in topic:
-                topic = msg.topic
-                payload = json.loads(msg.payload.decode())
-                handle_node_id_request(self, topic, payload)
-
-            
-        
         except json.JSONDecodeError as je:
             mqtt_logger.error(f"❌ Invalid JSON in MQTT message: {msg.payload}, Error: {je}")
-
         except Exception as e:
             mqtt_logger.error(f'❌ Error in on_message: {e}', exc_info=True)
-                 
+
+    def _handle_sensor_data(self, payload):
+        """Handle code 203 — sensor reading."""
+        from sensor_app.tasks import process_sensor_data
+
+        node_id = payload.get('node_id')
+        if not node_id:
+            mqtt_logger.warning("⚠️ No node_id in sensor data payload")
+            return
+
+        raw = int(payload.get('reading', 0))
+
+        # --- EWMA smoothing ---
+        ewma_key = f"ewma_weight:{node_id}"
+        prev_ewma_bytes = r.get(ewma_key)
+        if prev_ewma_bytes is not None:
+            prev_ewma = float(prev_ewma_bytes)
+            smoothed = EWMA_ALPHA * raw + (1.0 - EWMA_ALPHA) * prev_ewma
+        else:
+            smoothed = float(raw)
+        r.setex(ewma_key, CACHE_TIMEOUT, smoothed)
+
+        payload['smoothed_weight'] = smoothed
+
+        # --- Real-time WebSocket update ---
+        try:
+            cache_key_status = f"device_status:{node_id}"
+            status_bytes = r.get(cache_key_status)
+            status = status_bytes.decode('utf-8') if status_bytes else 'Activate'
+        except Exception:
+            status = 'Activate'
+
+        ws_message = {
+            'nodeId': node_id,
+            'nodeMac': payload.get('node_mac'),
+            'level': raw,
+            'smoothedWeight': round(smoothed, 2),
+            'batteryPercent': payload.get('battery_percent'),
+            'timestamp': payload.get('datetime', timezone.now().isoformat()),
+            'status': status,
+            'via': bool(payload.get('via')),
+            'repeaterMac': payload.get('repeater_mac'),
+            'masterMac': payload.get('master_mac'),
+        }
+
+        if self.channel_layer:
+            async_to_sync(self.channel_layer.group_send)(
+                "sensor_monitoring",
+                {
+                    "type": "handle_sensor_data_from_task",
+                    "sensor_data": ws_message
+                }
+            )
+
+        # --- Queue for batch DB insert ---
+        result = process_sensor_data.delay(payload)
+        mqtt_logger.info(f"✅ Sensor task queued {result.id} for node {node_id}")
+
     def connect(self):
         try:
             self.client.connect(settings.MQTT_BROKER, settings.MQTT_PORT, 60)
@@ -164,7 +207,9 @@ class MQTTClient:
         self.client.disconnect()
         mqtt_logger.info("MQTT Client disconnected")
 
+
 mqtt_client = None
+
 
 def get_mqtt_client():
     global mqtt_client
@@ -173,19 +218,16 @@ def get_mqtt_client():
         mqtt_client.connect()
     return mqtt_client
 
+
 def publish_message(topic: str, payload: dict, qos: int = 1, retain: bool = False):
     try:
         client = get_mqtt_client()
         json_payload = json.dumps(payload)
-
-        mqtt_logger.info(f"📤 JSON being published to '{topic}': {json_payload}")
-
+        mqtt_logger.info(f"📤 Publishing to '{topic}': {json_payload}")
         result = client.client.publish(topic, json_payload, qos=qos, retain=retain)
-
         if result.rc == 0:
-            mqtt_logger.info(f"✅ Published message to '{topic}' successfully.")
+            mqtt_logger.info(f"✅ Published to '{topic}' successfully")
         else:
-            mqtt_logger.error(f"❌ Failed to publish message to '{topic}', result code: {result.rc}")
-
+            mqtt_logger.error(f"❌ Failed to publish to '{topic}', rc={result.rc}")
     except Exception as e:
-        mqtt_logger.error(f"❌ Error while publishing to MQTT: {e}", exc_info=True)
+        mqtt_logger.error(f"❌ Error publishing to MQTT: {e}", exc_info=True)
