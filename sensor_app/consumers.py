@@ -22,6 +22,12 @@ class SensorConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         self.room_group_name = 'sensor_monitoring'
         await self.channel_layer.group_add(self.room_group_name, self.channel_name)
+
+        user = self.scope.get('user')
+        self.personal_group = f"user_{user.id}" if (user and user.is_authenticated) else None
+        if self.personal_group:
+            await self.channel_layer.group_add(self.personal_group, self.channel_name)
+
         await self.accept()
         
         # ★ FIXED: Added cls=DjangoJSONEncoder
@@ -71,6 +77,8 @@ class SensorConsumer(AsyncWebsocketConsumer):
 
     async def disconnect(self, close_code):
         await self.channel_layer.group_discard(self.room_group_name, self.channel_name)
+        if getattr(self, 'personal_group', None):
+            await self.channel_layer.group_discard(self.personal_group, self.channel_name)
         logger.info(f"WebSocket disconnected from {self.room_group_name}")
 
     async def receive(self, text_data):

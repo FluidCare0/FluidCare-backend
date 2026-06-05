@@ -117,7 +117,7 @@ class FluidBagAdmin(admin.ModelAdmin):
 
 @admin.register(SensorReading)
 class SensorReadingAdmin(admin.ModelAdmin):
-    list_display = ('fluid_bag', 'reading', 'battery_percent', 'timestamp', 'via')
+    list_display = ('fluid_bag', 'reading', 'timestamp', 'via')
     list_filter = ('fluid_bag__device', 'timestamp', 'via')
     search_fields = ('fluid_bag__device__mac_address',)
     readonly_fields = ('timestamp',)

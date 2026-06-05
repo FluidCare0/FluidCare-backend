@@ -12,7 +12,7 @@ from notification_app.services import create_admin_notifications, resolve_notifi
 @permission_classes([IsAuthenticated])
 def get_notifications(request):
     notifications = Notification.objects.filter(
-        Q(recipient=request.user) | Q(recipient__isnull=True)
+        Q(recipient=request.user) | Q(recipient__isnull=True, delivery_scope='global')
     ).filter(
         is_read=False,
         is_resolved=False,
@@ -25,7 +25,7 @@ def get_notifications(request):
 @permission_classes([IsAuthenticated])
 def get_notification_history(request):
     notifications = Notification.objects.filter(
-        Q(recipient=request.user) | Q(recipient__isnull=True)
+        Q(recipient=request.user) | Q(recipient__isnull=True, delivery_scope='global')
     ).filter(
         Q(is_read=True) | Q(is_resolved=True)
     )[:100]
@@ -53,8 +53,8 @@ def get_admin_notification_history(request):
 def mark_notification_read(request, notification_id):
     try:
         notification = Notification.objects.get(
-            Q(id=notification_id),
-            Q(recipient=request.user) | Q(recipient__isnull=True),
+            id=notification_id,
+            recipient=request.user,
         )
         notification.is_read = True
         notification.save(update_fields=['is_read'])
@@ -69,7 +69,7 @@ def resolve_notification(request, notification_id):
     try:
         notification = Notification.objects.get(
             Q(id=notification_id),
-            Q(recipient=request.user) | Q(recipient__isnull=True),
+            Q(recipient=request.user) | Q(recipient__isnull=True, delivery_scope='global'),
         )
         notification.is_resolved = True
         notification.is_read = True
@@ -83,7 +83,7 @@ def resolve_notification(request, notification_id):
 @permission_classes([IsAuthenticated])
 def mark_all_notifications_read(request):
     Notification.objects.filter(
-        Q(recipient=request.user) | Q(recipient__isnull=True),
+        recipient=request.user,
         is_read=False,
     ).update(is_read=True)
     return Response({'status': 'success'})

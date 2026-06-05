@@ -30,6 +30,7 @@ REQ_SENSOR_DATA   = 203
 REQ_TASK_COMPLETE = 204
 RES_ERASE_FLASH   = 205
 RES_ERASE_CONFIRM = 206
+REQ_DISCONNECT    = 207
 
 mqtt_logger = logging.getLogger('mqtt')
 
@@ -146,7 +147,10 @@ class MQTTClient:
             mqtt_logger.warning("⚠️ No node_id in sensor data payload")
             return
 
-        raw = int(payload.get('reading', 0))
+        # Timestamp at backend receipt — node has no RTC
+        payload['datetime'] = timezone.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        raw = float(payload.get('reading', 0.0))
 
         # --- EWMA smoothing ---
         ewma_key = f"ewma_weight:{node_id}"
@@ -173,8 +177,7 @@ class MQTTClient:
             'nodeMac': payload.get('node_mac'),
             'level': raw,
             'smoothedWeight': round(smoothed, 2),
-            'batteryPercent': payload.get('battery_percent'),
-            'timestamp': payload.get('datetime', timezone.now().isoformat()),
+            'timestamp': payload['datetime'],
             'status': status,
             'via': bool(payload.get('via')),
             'repeaterMac': payload.get('repeater_mac'),
@@ -189,6 +192,13 @@ class MQTTClient:
                     "sensor_data": ws_message
                 }
             )
+
+        # Update last_seen immediately — don't wait for Celery so connectivity check sees fresh timestamp
+        try:
+            import uuid as _uuid
+            Device.objects.filter(id=_uuid.UUID(node_id)).update(last_seen=timezone.now())
+        except Exception as e:
+            mqtt_logger.warning(f"⚠️ Could not update last_seen for {node_id}: {e}")
 
         # --- Queue for batch DB insert ---
         result = process_sensor_data.delay(payload)

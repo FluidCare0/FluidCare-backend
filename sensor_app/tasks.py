@@ -36,7 +36,7 @@ celery_logger = logging.getLogger('celery')
 
 DEVICE_STATUS_CACHE_KEY = "device_status:{}"
 DEVICE_LAST_SEEN_CACHE_KEY = "device_last_seen:{}"
-OFFLINE_THRESHOLD_SECONDS = 120
+OFFLINE_THRESHOLD_SECONDS = 45
 
 QUEUE_KEY = "sensor_queue"
 LOCK_KEY = "sensor_batch_lock"
@@ -73,7 +73,7 @@ def update_device_status(device_id):
         cache_key_last_seen = DEVICE_LAST_SEEN_CACHE_KEY.format(device_id)
         r.setex(cache_key_last_seen, OFFLINE_THRESHOLD_SECONDS + 60, int(time.time()))
         device = Device.objects.get(id=device_id)
-        if device.status != 'online':
+        if device.status not in ('online', 'completed'):
             Device.objects.filter(id=device_id).update(status='online')
             celery_logger.info(f"✅ Device {device_id} status → online")
     except Device.DoesNotExist:
@@ -121,7 +121,6 @@ def save_single_reading_to_db(payload, node_id, timestamp):
             smoothed_weight=payload.get("smoothed_weight"),
             timestamp=timestamp,
             via=bool(payload.get("via")),
-            battery_percent=payload.get("battery_percent"),
             repeater_mac=payload.get("repeater_mac"),
             master_mac=payload.get("master_mac"),
         )
@@ -154,11 +153,13 @@ def handle_node_register(self, payload):
         if existing:
             if existing.status == 'unassigned':
                 celery_logger.info(f"ℹ️ Device {existing.id} already unassigned, re-notifying frontend")
-            elif existing.status == 'completed':
+            elif existing.status in ('completed', 'offline'):
+                # Hide old record, create fresh device for re-registration
+                Device.objects.filter(id=existing.id).update(status='completed')
                 device = Device.objects.create(
                     mac_address=mac_address, type='node', status='unassigned'
                 )
-                celery_logger.info(f"🔄 Created new device {device.id} replacing completed one")
+                celery_logger.info(f"🔄 Created new device {device.id} (was {existing.status}) for MAC {mac_address}")
             else:
                 celery_logger.warning(f"⚠️ Device {existing.id} status '{existing.status}', ignoring 200")
                 return "ALREADY_EXISTS"
@@ -370,7 +371,6 @@ def process_sensor_batch(self):
                         smoothed_weight=msg.get("smoothed_weight"),
                         timestamp=ts,
                         via=bool(msg.get("via")),
-                        battery_percent=msg.get("battery_percent"),
                         repeater_mac=msg.get("repeater_mac"),
                         master_mac=msg.get("master_mac"),
                     )
@@ -587,6 +587,8 @@ def process_task_completion(self, payload):
 @shared_task(bind=True, max_retries=3, default_retry_delay=5, queue="celery")
 def process_disconnect(self, payload):
     node_id_str = payload.get('node_id')
+    mac_address = payload.get('mac')
+
     if not node_id_str:
         celery_logger.error(f"❌ No 'node_id' found in disconnect payload: {payload}")
         return "NO_NODE_ID"
@@ -597,8 +599,8 @@ def process_disconnect(self, payload):
         return "INVALID_NODE_ID"
     try:
         device = Device.objects.get(id=node_id)
-        Device.objects.filter(id=device.id).update(status='offline')
 
+        # End active assignment and free bed
         assignment = PatientDeviceBedAssignment.objects.filter(device=device, end_time__isnull=True).first()
         if assignment:
             assignment.end_time = timezone.now()
@@ -607,16 +609,20 @@ def process_disconnect(self, payload):
                 assignment.bed.is_occupied = False
                 assignment.bed.save(update_fields=['is_occupied'])
 
+        # Node already erased NVS locally before sending 207 — mark completed directly
+        Device.objects.filter(id=device.id).update(status='completed')
         cache_key_status = DEVICE_STATUS_CACHE_KEY.format(device.id)
-        r.setex(cache_key_status, 600, "Offline")
+        r.setex(cache_key_status, 600, "Task_Completed")
 
-        celery_logger.info(f"✅ Device {device.id} marked as disconnected")
+        celery_logger.info(f"✅ Device {device.id} marked completed after disconnect")
 
         send_sensor_data_to_websocket({
             'nodeId': node_id_str,
-            'status': 'Offline',
+            'status': 'Task_Completed',
             'timestamp': timezone.now().isoformat()
         })
+
+        notify_frontend_device_refresh(node_id_str)
 
     except Device.DoesNotExist:
         celery_logger.warning(f"⚠️ Device {node_id} not found for disconnect")
@@ -624,7 +630,7 @@ def process_disconnect(self, payload):
     except redis.RedisError as e:
         celery_logger.error(f"❌ Redis error during disconnect for device {node_id}: {e}")
 
-    return "DISCONNECTED"
+    return "COMPLETED"
 
 
 # ============================================
@@ -634,48 +640,52 @@ def process_disconnect(self, payload):
 @shared_task(queue="celery")
 def check_device_connectivity():
     celery_logger.info("🔍 Starting connectivity check task...")
-    threshold_time = int(time.time()) - OFFLINE_THRESHOLD_SECONDS
+    threshold_time = timezone.now() - timedelta(seconds=OFFLINE_THRESHOLD_SECONDS)
 
-    active_devices = Device.objects.filter(status='online').values_list('id', flat=True)
+    # Use DB last_seen — reliable, not subject to Redis TTL expiry
+    stale_devices = Device.objects.filter(
+        status='online',
+        last_seen__lt=threshold_time
+    ).select_related()
+
     offline_devices_count = 0
 
-    for device_id in active_devices:
-        cache_key_last_seen = DEVICE_LAST_SEEN_CACHE_KEY.format(device_id)
+    for device in stale_devices:
         try:
-            last_seen_bytes = r.get(cache_key_last_seen)
+            Device.objects.filter(id=device.id, status='online').update(status='offline')
+            cache_key_status = DEVICE_STATUS_CACHE_KEY.format(device.id)
+            r.setex(cache_key_status, 600, "Offline")
+            celery_logger.info(f"⚠️ Device {device.id} offline (last_seen={device.last_seen})")
+            offline_devices_count += 1
 
-            if last_seen_bytes:
-                last_seen_timestamp = int(last_seen_bytes)
-                if last_seen_timestamp < threshold_time:
-                    Device.objects.filter(id=device_id, status='online').update(status='offline')
-                    cache_key_status = DEVICE_STATUS_CACHE_KEY.format(device_id)
-                    r.setex(cache_key_status, 600, "Offline")
-                    celery_logger.info(f"⚠️ Device {device_id} offline (inactivity)")
-                    offline_devices_count += 1
+            create_notification(
+                device=device,
+                title="Device Offline",
+                message=f"Device {device.id} has gone offline due to inactivity.",
+                n_type='error',
+                severity='high'
+            )
 
-                    create_notification(
-                        device=Device.objects.get(id=device_id),
-                        title="Device Offline",
-                        message=f"Device {device_id} has gone offline due to inactivity.",
-                        n_type='error',
-                        severity='high'
-                    )
+            send_sensor_data_to_websocket({
+                'nodeId': str(device.id),
+                'status': 'Offline',
+                'reason': 'Inactivity timeout',
+                'timestamp': timezone.now().isoformat()
+            })
 
-                    send_sensor_data_to_websocket({
-                        'nodeId': str(device_id),
-                        'status': 'Offline',
-                        'reason': 'Inactivity timeout',
-                        'timestamp': timezone.now().isoformat()
-                    })
-            else:
-                Device.objects.filter(id=device_id, status='online').update(status='offline')
-                cache_key_status = DEVICE_STATUS_CACHE_KEY.format(device_id)
-                r.setex(cache_key_status, 600, "Offline")
-                offline_devices_count += 1
+        except Exception as e:
+            celery_logger.error(f"❌ Error marking device {device.id} offline: {e}")
 
-        except ValueError:
-            celery_logger.error(f"❌ Invalid last_seen timestamp format for device {device_id}")
-        except redis.RedisError as e:
-            celery_logger.error(f"❌ Redis error checking device {device_id}: {e}")
+    # Also handle online devices with no last_seen set at all
+    never_seen = Device.objects.filter(status='online', last_seen__isnull=True)
+    for device in never_seen:
+        try:
+            Device.objects.filter(id=device.id, status='online').update(status='offline')
+            cache_key_status = DEVICE_STATUS_CACHE_KEY.format(device.id)
+            r.setex(cache_key_status, 600, "Offline")
+            offline_devices_count += 1
+            celery_logger.warning(f"⚠️ Device {device.id} had no last_seen, marked offline")
+        except Exception as e:
+            celery_logger.error(f"❌ Error marking device {device.id} offline: {e}")
 
     celery_logger.info(f"✅ Connectivity check completed. {offline_devices_count} devices marked offline.")

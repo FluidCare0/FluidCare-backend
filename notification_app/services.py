@@ -28,24 +28,21 @@ def resolve_notification_recipients(sender, target_mode, target_role=None, targe
 def create_admin_notifications(*, sender, recipients, delivery_scope, target_role, title, message, notification_type, severity):
     from notification_app.tasks import send_notification_to_websocket
 
-    # Create ONE shared notification row (recipient=None) per send action.
-    # delivery_scope + target_role already capture the intended audience.
-    # The get_notifications view returns rows where recipient=current_user OR recipient=None,
-    # so all targeted users see this single row — no N-duplicate rows in the sidebar.
-    notification = Notification.objects.create(
-        recipient=None,               # shared broadcast, not per-user
-        created_by=sender,
-        source='admin',
-        delivery_scope=delivery_scope,
-        target_role=target_role,
-        title=title,
-        message=message,
-        notification_type=notification_type,
-        severity=severity,
-    )
+    # One row per recipient so each user owns their copy — read/resolve state is isolated.
+    notifications = []
+    for recipient in recipients:
+        notification = Notification.objects.create(
+            recipient=recipient,
+            created_by=sender,
+            source='admin',
+            delivery_scope=delivery_scope,
+            target_role=target_role,
+            title=title,
+            message=message,
+            notification_type=notification_type,
+            severity=severity,
+        )
+        notifications.append(notification)
+        send_notification_to_websocket(notification)
 
-    # One WebSocket broadcast → one toast → one sidebar entry
-    send_notification_to_websocket(notification)
-
-    # Return a list for API compatibility (count field in the response)
-    return [notification]
+    return notifications

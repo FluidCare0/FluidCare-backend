@@ -69,7 +69,7 @@ class SensorReadingSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SensorReading
-        fields = ['level', 'smoothed_weight', 'timestamp', 'battery_percent']
+        fields = ['level', 'smoothed_weight', 'timestamp']
 
 
 class PatientDeviceBedAssignmentSerializer(serializers.ModelSerializer):

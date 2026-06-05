@@ -22,16 +22,19 @@ r = redis.Redis.from_url(settings.REDIS_URL)
 def send_notification_to_websocket(notification):
     try:
         channel_layer = get_channel_layer()
-        if channel_layer:
-            serializer = NotificationSerializer(notification)
-            async_to_sync(channel_layer.group_send)(
-                "sensor_monitoring",
-                {
-                    "type": "handle_notification",
-                    "notification": serializer.data
-                }
-            )
-            celery_logger.info(f"🔔 Sent WebSocket notification: {notification.title}")
+        if not channel_layer:
+            return
+        serializer = NotificationSerializer(notification)
+        # Personal notifications go to that user's private group; global ones broadcast.
+        group = f"user_{notification.recipient_id}" if notification.recipient_id else "sensor_monitoring"
+        async_to_sync(channel_layer.group_send)(
+            group,
+            {
+                "type": "handle_notification",
+                "notification": serializer.data
+            }
+        )
+        celery_logger.info(f"🔔 Sent WebSocket notification to {group}: {notification.title}")
     except Exception as e:
         celery_logger.error(f"❌ WebSocket notification error: {e}")
 
@@ -65,8 +68,7 @@ def process_alert(payload):
         
         node_id = payload.get('node_id')
         reading = payload.get('reading')
-        battery = payload.get('battery_percent')
-        
+
         if not reading:
             celery_logger.warning(f"No reading value in payload")
             return 'NO_READING'

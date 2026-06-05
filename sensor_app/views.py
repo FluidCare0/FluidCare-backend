@@ -40,8 +40,35 @@ def get_all_devices(request):
         .filter(end_time__isnull=True, device__isnull=False)
         .select_related('patient', 'device', 'bed', 'ward', 'floor')
     )
-    serializer = PatientDeviceBedAssignmentSerializer(active_assignments, many=True)
-    return Response(serializer.data)
+    assigned_device_ids = {a.device_id for a in active_assignments}
+
+    # Devices that exist but have no active assignment (exclude completed)
+    standalone_devices = (
+        Device.objects
+        .filter(type='node')
+        .exclude(status='completed')
+        .exclude(id__in=assigned_device_ids)
+        .prefetch_related('fluid_bags')
+    )
+
+    data = list(PatientDeviceBedAssignmentSerializer(active_assignments, many=True).data)
+
+    for device in standalone_devices:
+        data.append({
+            "id": None,
+            "device": DeviceSerializer(device).data,
+            "patient_name": None,
+            "user_name": None,
+            "bed_number": None,
+            "ward_name": None,
+            "ward_number": None,
+            "floor_number": None,
+            "start_time": None,
+            "end_time": None,
+            "notes": None,
+        })
+
+    return Response(data)
 
 
 @api_view(['GET'])
