@@ -29,6 +29,7 @@ class DeviceAdmin(admin.ModelAdmin):
     inlines = [FluidBagInline]
     ordering = ('-created_at',)
 
+
 # --- Main Assignment Admin ---
 @admin.register(PatientDeviceBedAssignment)
 class PatientDeviceBedAssignmentAdmin(admin.ModelAdmin):

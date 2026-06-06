@@ -76,6 +76,8 @@ def update_device_status(device_id):
         if device.status not in ('online', 'completed'):
             Device.objects.filter(id=device_id).update(status='online')
             celery_logger.info(f"✅ Device {device_id} status → online")
+            # Notify frontend so card updates without page refresh
+            notify_frontend_device_refresh(str(device_id))
     except Device.DoesNotExist:
         celery_logger.warning(f"⚠️ Device {device_id} not found")
     except redis.RedisError as e:
@@ -148,26 +150,13 @@ def handle_node_register(self, payload):
         return "NO_MAC"
 
     try:
-        existing = Device.objects.filter(mac_address=mac_address).first()
-
+        # Only notify frontend that this MAC is broadcasting.
+        # Device creation is manual — done via POST /devices/add/ from frontend.
+        existing = Device.objects.filter(mac_address=mac_address).exclude(status='completed').first()
         if existing:
-            if existing.status == 'unassigned':
-                celery_logger.info(f"ℹ️ Device {existing.id} already unassigned, re-notifying frontend")
-            elif existing.status in ('completed', 'offline'):
-                # Hide old record, create fresh device for re-registration
-                Device.objects.filter(id=existing.id).update(status='completed')
-                device = Device.objects.create(
-                    mac_address=mac_address, type='node', status='unassigned'
-                )
-                celery_logger.info(f"🔄 Created new device {device.id} (was {existing.status}) for MAC {mac_address}")
-            else:
-                celery_logger.warning(f"⚠️ Device {existing.id} status '{existing.status}', ignoring 200")
-                return "ALREADY_EXISTS"
+            celery_logger.info(f"ℹ️ MAC {mac_address} already has active device {existing.id} (status={existing.status}), notifying frontend")
         else:
-            device = Device.objects.create(
-                mac_address=mac_address, type='node', status='unassigned'
-            )
-            celery_logger.info(f"✅ Created unassigned device {device.id} for MAC {mac_address}")
+            celery_logger.info(f"📡 MAC {mac_address} broadcasting — waiting for manual device creation")
 
         channel_layer = get_channel_layer()
         if channel_layer:

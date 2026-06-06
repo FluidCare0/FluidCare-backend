@@ -412,6 +412,19 @@ CELERY_TASK_ROUTES = {
     'notification_app.tasks.send_alert_notification': {'queue': 'high_priority'},
 }
 
+# --------------------------
+# Sensor Plausibility Validation
+# --------------------------
+# Max grams a bag may lose between two consecutive readings. Readings that drop
+# more than this in a single interval are quarantined (logged and dropped).
+# Default 50 g covers aggressive drip rates while blocking HX711 noise spikes.
+SENSOR_MAX_DROP_G_PER_INTERVAL = config('SENSOR_MAX_DROP_G_PER_INTERVAL', default=50.0, cast=float)
+
+# When True, any reading that shows a weight INCREASE vs the previous reading
+# is rejected unless a refill event has been flagged for that node.
+# Fluid bags are monotonically draining, so increases are physical anomalies.
+SENSOR_REJECT_WEIGHT_INCREASE = config('SENSOR_REJECT_WEIGHT_INCREASE', default=True, cast=bool)
+
 CELERY_BEAT_SCHEDULE = {
     'check-device-connectivity-every-30-seconds': {
         'task': 'sensor_app.tasks.check_device_connectivity',

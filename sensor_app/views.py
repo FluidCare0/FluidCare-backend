@@ -15,6 +15,7 @@ from sensor_app.models import Device, FluidBag, PatientDeviceBedAssignment, Sens
 from django.shortcuts import get_object_or_404, render
 from sensor_app.mqtt_client import publish_message
 from sensor_app.serializers import (
+    DeviceSerializer,
     DeviceWithCurrentAssignmentSerializer,
     FluidBagSerializer,
     PatientDeviceBedAssignmentSerializer,
@@ -150,11 +151,11 @@ def get_sensor_history(request, device_id):
 @api_view(['POST'])
 def register_node(request):
     """
-    NEW FLOW:
-    1. Device already exists (created as 'unassigned' when code 200 arrived)
-    2. Find it by MAC, create FluidBag + Assignment
-    3. Send code 201 → Master → Node (so node stores the ID)
-    4. Node will reply with code 202, which triggers handle_node_confirm
+    Assign device to patient. Creates device on-the-fly if not already present.
+    1. Get or create Device for MAC (unassigned)
+    2. Create FluidBag + Assignment
+    3. Send code 201 → Master → Node (node stores the ID)
+    4. Node replies code 202 → handle_node_confirm → status = online
     """
     mac = request.data.get('mac')
     patient_id = request.data.get('patient_id')
@@ -175,14 +176,17 @@ def register_node(request):
             status=400
         )
 
-    # --- Find the unassigned device (created by code 200) ---
+    # Get existing unassigned device or create one — device creation happens at assignment time
     device = Device.objects.filter(mac_address=mac, status='unassigned').first()
     if not device:
-        return Response(
-            {"error": f"No unassigned device found with MAC {mac}. "
-                      f"Make sure the node is powered on and in pairing mode."},
-            status=404
-        )
+        # Check if already actively assigned
+        active = Device.objects.filter(mac_address=mac).exclude(status='completed').first()
+        if active:
+            return Response(
+                {"error": f"Device with MAC {mac} is already active (status={active.status})."},
+                status=400
+            )
+        device = Device.objects.create(mac_address=mac, type='node', status='unassigned')
 
     patient = get_object_or_404(Patient, id=patient_id)
     bed = get_object_or_404(Bed, id=bed_id)

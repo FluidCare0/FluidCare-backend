@@ -152,6 +152,33 @@ class MQTTClient:
 
         raw = float(payload.get('reading', 0.0))
 
+        # --- Server-side plausibility validation ---
+        # Thresholds are configurable in settings.py:
+        #   SENSOR_MAX_DROP_G_PER_INTERVAL  (default 50 g)
+        #   SENSOR_REJECT_WEIGHT_INCREASE   (default True)
+        max_drop = getattr(settings, 'SENSOR_MAX_DROP_G_PER_INTERVAL', 50.0)
+        reject_increase = getattr(settings, 'SENSOR_REJECT_WEIGHT_INCREASE', True)
+        prev_weight_key = f"prev_weight:{node_id}"
+        prev_weight_bytes = r.get(prev_weight_key)
+        if prev_weight_bytes is not None:
+            prev_raw = float(prev_weight_bytes)
+            delta = raw - prev_raw
+            if reject_increase and delta > 0:
+                mqtt_logger.warning(
+                    f"⚠️ [plausibility] {node_id}: weight increased "
+                    f"{prev_raw:.1f}→{raw:.1f} g (Δ=+{delta:.1f} g) — "
+                    f"rejected (no refill flag)"
+                )
+                return
+            if delta < -max_drop:
+                mqtt_logger.warning(
+                    f"⚠️ [plausibility] {node_id}: implausible drop "
+                    f"{prev_raw:.1f}→{raw:.1f} g (Δ={delta:.1f} g, "
+                    f"limit={max_drop} g/interval) — rejected"
+                )
+                return
+        r.setex(prev_weight_key, CACHE_TIMEOUT, raw)
+
         # --- EWMA smoothing ---
         ewma_key = f"ewma_weight:{node_id}"
         prev_ewma_bytes = r.get(ewma_key)
@@ -165,12 +192,14 @@ class MQTTClient:
         payload['smoothed_weight'] = smoothed
 
         # --- Real-time WebSocket update ---
+        # Write "Activate" to Redis immediately — don't wait for Celery.
+        # Prevents card staying grey when device recovers from offline.
+        cache_key_status = f"device_status:{node_id}"
         try:
-            cache_key_status = f"device_status:{node_id}"
-            status_bytes = r.get(cache_key_status)
-            status = status_bytes.decode('utf-8') if status_bytes else 'Activate'
+            r.setex(cache_key_status, OFFLINE_THRESHOLD_SECONDS + 60, "Activate")
         except Exception:
-            status = 'Activate'
+            pass
+        status = "Activate"
 
         ws_message = {
             'nodeId': node_id,
