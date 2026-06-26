@@ -21,6 +21,7 @@ CACHE_TIMEOUT = 60 * 50
 
 # Signal-processing constants
 EWMA_ALPHA = 0.2
+OFFLINE_THRESHOLD_SECONDS = 45  # must match tasks.py
 
 # Protocol request codes
 REQ_NODE_ID       = 200

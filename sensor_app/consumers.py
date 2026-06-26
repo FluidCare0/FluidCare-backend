@@ -156,14 +156,8 @@ class SensorConsumer(AsyncWebsocketConsumer):
 
         logger.debug(f"Prepared final message for WebSocket (with status): {final_message_for_websocket}")
 
-        await self.channel_layer.group_send(
-            self.room_group_name,
-            {
-                'type': 'sensor_message',
-                'message': final_message_for_websocket
-            }
-        )
-        logger.info(f"Broadcasted final sensor data with status via channel layer for device {device_identifier}")
+        await self.send(text_data=json.dumps(final_message_for_websocket, cls=DjangoJSONEncoder))
+        logger.info(f"Sent sensor data with status to client for device {device_identifier}")
 
     # ---- Existing: Notification dispatch ----
     async def handle_notification(self, event):

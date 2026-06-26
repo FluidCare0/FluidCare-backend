@@ -116,10 +116,7 @@ def get_sensor_history_view(request, device_id):
     hours = int(request.GET.get('hours', 24))
     time_threshold = timezone.now() - timedelta(hours=hours)
 
-    try:
-        device = get_object_or_404(Device, id=device_id)
-    except Device.DoesNotExist:
-        pass
+    device = get_object_or_404(Device, id=device_id)
 
     readings = SensorReading.objects.filter(
         fluid_bag__device=device,

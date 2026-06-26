@@ -57,11 +57,22 @@ class DeviceWithCurrentAssignmentSerializer(serializers.ModelSerializer):
         ]
 
     def get_current_patient(self, obj):
-        # Fixed: use correct property name 'current_bed_assignment'
         assignment = obj.current_bed_assignment
         if assignment and assignment.patient:
             return assignment.patient.name
         return None
+
+    def get_current_bed_number(self, obj):
+        assignment = obj.current_bed_assignment
+        return assignment.bed.bed_number if assignment and assignment.bed else None
+
+    def get_current_ward_number(self, obj):
+        assignment = obj.current_bed_assignment
+        return assignment.ward.ward_number if assignment and assignment.ward else None
+
+    def get_current_ward_name(self, obj):
+        assignment = obj.current_bed_assignment
+        return assignment.ward.name if assignment and assignment.ward else None
 
 
 class SensorReadingSerializer(serializers.ModelSerializer):
