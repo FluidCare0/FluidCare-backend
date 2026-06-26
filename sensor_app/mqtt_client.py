@@ -20,7 +20,7 @@ BATCH_SIZE = 1000
 CACHE_TIMEOUT = 60 * 50
 
 # Signal-processing constants
-EWMA_ALPHA = 0.2
+EWMA_ALPHA = 0.5
 OFFLINE_THRESHOLD_SECONDS = 45  # must match tasks.py
 
 # Protocol request codes
@@ -153,35 +153,22 @@ class MQTTClient:
 
         raw = float(payload.get('reading', 0.0))
 
-        # --- EWMA smoothing ---
-        ewma_key = f"ewma_weight:{node_id}"
-        prev_ewma_bytes = r.get(ewma_key)
-        if prev_ewma_bytes is not None:
-            prev_ewma = float(prev_ewma_bytes)
-            smoothed = EWMA_ALPHA * raw + (1.0 - EWMA_ALPHA) * prev_ewma
-        else:
-            smoothed = float(raw)
-        r.setex(ewma_key, CACHE_TIMEOUT, smoothed)
-
-        payload['smoothed_weight'] = smoothed
+        payload['smoothed_weight'] = raw
 
         # --- Real-time WebSocket update ---
-        # Write "Activate" to Redis immediately — don't wait for Celery.
-        # Prevents card staying grey when device recovers from offline.
         cache_key_status = f"device_status:{node_id}"
         try:
             r.setex(cache_key_status, OFFLINE_THRESHOLD_SECONDS + 60, "Activate")
         except Exception:
             pass
-        status = "Activate"
 
         ws_message = {
             'nodeId': node_id,
             'nodeMac': payload.get('node_mac'),
             'level': raw,
-            'smoothedWeight': round(smoothed, 2),
+            'smoothedWeight': round(raw, 2),
             'timestamp': payload['datetime'],
-            'status': status,
+            'status': "Activate",
             'via': bool(payload.get('via')),
             'repeaterMac': payload.get('repeater_mac'),
             'masterMac': payload.get('master_mac'),
