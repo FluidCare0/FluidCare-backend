@@ -151,7 +151,7 @@ class MQTTClient:
         # Timestamp at backend receipt — node has no RTC
         payload['datetime'] = timezone.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        raw = float(payload.get('reading', 0.0))
+        raw = max(0.0, float(payload.get('reading', 0.0)) - 17.0)
 
         payload['smoothed_weight'] = raw
 
